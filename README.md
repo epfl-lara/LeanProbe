@@ -5,7 +5,7 @@ LeanInteract-backed REPL warm, reuses the elaborated imports and prior
 declarations in a file, and checks only the declaration an agent is currently
 editing.
 
-LeanProbe is not the final verifier. Use it for fast repair-loop feedback, then
+LeanProbe is not the final verifier. Use it for fast inner-loop feedback, then
 run `lake env lean File.lean`, `lake build`, or CI before accepting a change.
 
 ## Tools
@@ -21,19 +21,20 @@ The public MCP tool names are:
 
 ## Why It Is Faster
 
-Agent proof repair usually repeats one operation many times: try a replacement
-for one theorem, read the error or proof state, then try another replacement.
-Repeated full-file checks pay import/header/prior-declaration cost every time.
+Agents often make many related Lean checks inside the same file: try a
+replacement declaration, inspect diagnostics or proof state, try the next
+replacement, then move to another declaration nearby. Repeated full-file checks
+pay import/header/prior-declaration cost every time.
 
 LeanProbe separates that cost:
 
 ```text
 prepare header/imports/prior declarations -> env before target
-env before target + candidate declaration -> diagnostics/proof states
-env before target + next candidate declaration -> diagnostics/proof states
+env before target + checked declaration -> diagnostics/proof states
+env before target + next checked declaration -> diagnostics/proof states
 ```
 
-For queue traversal, the useful pattern is:
+For sequential same-file checks, the useful pattern is:
 
 ```text
 header/import env -> next declaration chunk -> next env -> next declaration chunk
@@ -41,9 +42,9 @@ header/import env -> next declaration chunk -> next env -> next declaration chun
 
 The benchmark therefore measures two different claims:
 
-- target repair loop: prepare env before one declaration, then repeatedly check
-  candidate replacements;
-- queue traversal: prepare a header once, then advance declaration by
+- repeated target checks: prepare env before one declaration, then repeatedly
+  check replacements for that declaration;
+- sequential same-file checks: prepare a header once, then advance declaration by
   declaration with env reuse.
 
 ## Install
@@ -88,7 +89,7 @@ lean-probe benchmark-suite \
   --results-dir benchmark_results/local-$(date +%F) \
   --pretty
 
-lean-probe benchmark-queue /path/to/File.lean \
+lean-probe benchmark-file /path/to/File.lean \
   --cwd /path/to/lake-project \
   --runs 3 \
   --results-dir benchmark_results/local-$(date +%F) \
@@ -154,8 +155,8 @@ Example MCP configuration:
 }
 ```
 
-Agents should call `lean_probe_prepare` at the start of a same-file theorem
-turn, then use `lean_probe_check` after concrete candidate edits. When ordinary
+Agents should call `lean_probe_prepare` at the start of a same-file checking
+turn, then use `lean_probe_check` after concrete edits. When ordinary
 diagnostics do not explain the failure, call `lean_probe_feedback` and inspect
 `messages`, `tactics`, and `feedback_lean`.
 
@@ -186,10 +187,11 @@ The built-in benchmark compares only standalone, reproducible surfaces:
 - LeanProbe warm check: target declaration only, using cached env before target;
 - LeanProbe feedback: same target check with tactic/proof-state metadata;
 - LeanProbe no-cache check: fresh LeanProbe/LeanInteract server per attempt;
-- queue cutoff Lake: temp file with header plus declarations up to cutoff;
-- queue cutoff LeanInteract cumulative: one header env, full growing suffix each
-  cutoff;
-- queue cutoff LeanInteract delta: one header env, next declaration chunk only.
+- same-file cutoff Lake: temp file with header plus declarations up to cutoff;
+- same-file cutoff LeanInteract cumulative: one header env, full growing
+  declaration prefix each cutoff;
+- same-file cutoff LeanInteract delta: one header env, next declaration chunk
+  only.
 - optional external command: any user-provided shell verifier/wrapper timed
   with the same temp full file.
 
@@ -218,7 +220,7 @@ prior example validation, feedback enabled, no-cache baseline enabled. Prepare
 time is shown separately and included in break-even/amortized speedups. The Lake
 baseline writes a temp full file and runs `lake env lean`.
 
-### Target Repair Loop
+### Repeated Target Checks
 
 macOS:
 
@@ -265,10 +267,10 @@ macOS per-target detail:
 
 The first analysis row includes the coldest LeanInteract server setup observed
 in this run. That is why its prepare time is much higher and why it needs four
-candidate attempts to break even. The table keeps it because hiding cold-start
+check attempts to break even. The table keeps it because hiding cold-start
 noise would make the benchmark less transparent.
 
-### Queue Traversal
+### Sequential Same-File Checks
 
 Run policy: 1 measured run per file, sequential execution, 5 declaration
 cutoffs per file. All Lake and LeanInteract cutoff statuses matched and all
@@ -307,10 +309,10 @@ PYTHONPATH=src python -m lean_probe.cli benchmark-suite \
   --pretty
 ```
 
-Run one queue benchmark:
+Run one sequential same-file benchmark:
 
 ```bash
-PYTHONPATH=src python -m lean_probe.cli benchmark-queue \
+PYTHONPATH=src python -m lean_probe.cli benchmark-file \
   examples/lean/analysis_real.lean \
   --cwd /path/to/mathlib-lake-project \
   --runs 1 \
@@ -327,8 +329,8 @@ PYTHONPATH=src python -m pytest -q
 Additional validation performed for the May 13, 2026 numbers:
 
 - every positive example file passed `lake env lean`;
-- all 20 target repair-loop benchmark cases returned `success=true`;
-- all 4 queue benchmark files reported matching successful Lake and
+- all 20 repeated target benchmark cases returned `success=true`;
+- all 4 sequential same-file benchmark files reported matching successful Lake and
   LeanInteract cutoff status;
 - the same Python tests and benchmark suite passed on `larapc2`;
 - one intentionally broken replacement for `nat_mul_pos_bench` returned

@@ -901,7 +901,7 @@ def run_queue_cutoff_benchmark(
         "last_cutoff_details": last_cutoffs,
         "failures": failures[:5],
     }
-    result_path = _write_result_json(result, results_dir, label or f"queue-{resolved.stem}")
+    result_path = _write_result_json(result, results_dir, label or f"file-{resolved.stem}")
     if result_path:
         result["result_path"] = result_path
     return result
@@ -913,7 +913,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run LeanProbe benchmarks.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    target = sub.add_parser("target", help="Run one target repair-loop benchmark")
+    target = sub.add_parser("target", help="Run one repeated target benchmark")
     target.add_argument("file_path")
     target.add_argument("theorem_id")
     target.add_argument("--cwd", default="")
@@ -952,15 +952,15 @@ def main() -> None:
     suite.add_argument("--results-dir", default="")
     suite.add_argument("--pretty", action="store_true")
 
-    queue = sub.add_parser("queue", help="Run queue cutoff benchmark")
-    queue.add_argument("file_path")
-    queue.add_argument("--cwd", default="")
-    queue.add_argument("--runs", type=int, default=3)
-    queue.add_argument("--max-cutoffs", type=int, default=0)
-    queue.add_argument("--timeout-s", type=int, default=120)
-    queue.add_argument("--results-dir", default="")
-    queue.add_argument("--label", default="")
-    queue.add_argument("--pretty", action="store_true")
+    file_benchmark = sub.add_parser("file", help="Run same-file sequential cutoff benchmark")
+    file_benchmark.add_argument("file_path")
+    file_benchmark.add_argument("--cwd", default="")
+    file_benchmark.add_argument("--runs", type=int, default=3)
+    file_benchmark.add_argument("--max-cutoffs", type=int, default=0)
+    file_benchmark.add_argument("--timeout-s", type=int, default=120)
+    file_benchmark.add_argument("--results-dir", default="")
+    file_benchmark.add_argument("--label", default="")
+    file_benchmark.add_argument("--pretty", action="store_true")
 
     args = parser.parse_args()
     external_commands = _external_command_specs(getattr(args, "external_command", []))

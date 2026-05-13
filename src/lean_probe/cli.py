@@ -115,12 +115,16 @@ def build_parser() -> argparse.ArgumentParser:
     suite.add_argument("--results-dir", default="", help="Optional directory for raw JSON output")
     suite.add_argument("--case", action="append", default=[], help="Run only a named benchmark case")
 
-    queue = sub.add_parser("benchmark-queue", parents=[common_parent], help="Compare Lake cutoffs with LeanInteract env reuse")
-    queue.add_argument("file_path")
-    queue.add_argument("--runs", type=int, default=3)
-    queue.add_argument("--max-cutoffs", type=int, default=0, help="Limit declaration cutoffs; 0 means all")
-    queue.add_argument("--results-dir", default="", help="Optional directory for raw JSON output")
-    queue.add_argument("--label", default="", help="Optional benchmark label")
+    file_benchmark = sub.add_parser(
+        "benchmark-file",
+        parents=[common_parent],
+        help="Compare repeated same-file cutoff checks with LeanInteract env reuse",
+    )
+    file_benchmark.add_argument("file_path")
+    file_benchmark.add_argument("--runs", type=int, default=3)
+    file_benchmark.add_argument("--max-cutoffs", type=int, default=0, help="Limit declaration cutoffs; 0 means all")
+    file_benchmark.add_argument("--results-dir", default="", help="Optional directory for raw JSON output")
+    file_benchmark.add_argument("--label", default="", help="Optional benchmark label")
 
     sub.add_parser("mcp", help="Run the LeanProbe MCP stdio server")
     return parser
@@ -187,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         _emit(payload, pretty=args.pretty)
         return 0 if payload.get("success") else 1
 
-    if args.command == "benchmark-queue":
+    if args.command == "benchmark-file":
         payload = run_queue_cutoff_benchmark(
             file_path=args.file_path,
             cwd=args.cwd or None,
