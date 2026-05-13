@@ -1,17 +1,18 @@
 # LeanProbe
 
-LeanProbe is a standalone Lean 4 feedback package for coding agents. It keeps a
-LeanInteract-backed REPL warm, reuses the elaborated imports and prior
-declarations in a file, and checks only the declaration an agent is currently
-editing.
+LeanProbe is a standalone Python package, CLI, and MCP server for fast Lean 4
+feedback in coding-agent workflows. It uses
+[LeanInteract](https://github.com/augustepoiroux/LeanInteract) as its execution
+backend, keeps a Lean REPL warm, reuses elaborated imports and prior
+declarations, and checks the declaration currently under edit.
 
-LeanProbe returns real Lean results from LeanInteract: diagnostics, warnings,
-`sorry` detection, tactic metadata, and goal states. It is useful as an
-acceptance-style check for the Lean chunk it runs. Many projects should still
-run `lake env lean File.lean`, `lake build`, or CI for whole-file or whole-project
-release gates.
+LeanProbe returns Lean diagnostics, warnings, `sorry` detection, tactic
+metadata, goal states, and inline `feedback_lean`. The result is a real Lean
+response for the checked code chunk. Whole-file or whole-project gates can still
+run `lake env lean File.lean`, `lake build`, or CI when that broader scope is
+required.
 
-## Tools
+## MCP Tools
 
 The public MCP tool names are:
 
@@ -24,10 +25,10 @@ The public MCP tool names are:
 
 ## Why It Is Faster
 
-Agents often make many related Lean checks inside the same file: try a
-replacement declaration, inspect diagnostics or proof state, try the next
-replacement, then move to another declaration nearby. Repeated full-file checks
-pay import/header/prior-declaration cost every time.
+Automated Lean workflows often perform many related checks inside one file:
+try a replacement declaration, inspect diagnostics or proof state, try the next
+replacement, then move to a nearby declaration. A repeated full-file terminal
+check pays import, header, and prior-declaration elaboration cost each time.
 
 LeanProbe separates that cost:
 
@@ -43,7 +44,7 @@ For sequential same-file checks, the useful pattern is:
 header/import env -> next declaration chunk -> next env -> next declaration chunk
 ```
 
-The benchmark therefore measures two different claims:
+The benchmark suite measures two separate cases:
 
 - repeated target checks: prepare env before one declaration, then repeatedly
   check replacements for that declaration;
@@ -62,7 +63,7 @@ Requirements:
 - Lean 4 and Lake through `elan`
 - `git`
 - a Lean project that already builds, or `--auto-build` when LeanInteract should
-  build it
+  build the project before checking
 
 ## CLI
 
@@ -167,7 +168,8 @@ diagnostics do not explain the failure, call `lean_probe_feedback` and inspect
 
 LeanProbe ships standalone Mathlib benchmark examples under `examples/lean/`.
 They are not copied from, imported from, or coupled to any external agent
-project. Run them from any existing Mathlib Lake project with `--cwd`.
+project. Run them from any existing Mathlib Lake project by passing that project
+as `--cwd`.
 
 | File | Targets |
 | --- | --- |
@@ -182,7 +184,7 @@ groups, sizes, and descriptions. Raw benchmark JSON is written to
 
 ## Verification Surfaces
 
-The built-in benchmark compares only standalone, reproducible surfaces:
+The built-in benchmarks compare standalone, reproducible verification surfaces:
 
 - terminal `lake env lean`: canonical full-file verification of a temp file
   containing the candidate replacement;
@@ -222,8 +224,8 @@ sensitive.
 
 Run policy: 1 measured run per target, 0 benchmark warmups, warm Lake caches from
 prior example validation, feedback enabled, no-cache baseline enabled. Prepare
-time is shown separately and included in break-even/amortized speedups. The Lake
-baseline writes a temp full file and runs `lake env lean`.
+time is shown separately and included in break-even and amortized speedups. The
+Lake baseline writes a temp full file and runs `lake env lean`.
 
 ### Repeated Target Checks
 
@@ -271,9 +273,8 @@ macOS per-target detail:
 | `nat_dvd_trans` | `number_theory_nat.lean` | 3.651s | 3.502s | 0.007s | 0.005s | 3.847s | 1 | 3.11x | 10.22x |
 
 The first analysis row includes the coldest LeanInteract server setup observed
-in this run. That is why its prepare time is much higher and why it needs four
-check attempts to break even. The table keeps it because hiding cold-start
-noise would make the benchmark less transparent.
+in this run. Its prepare time is therefore much higher, and it needs four check
+attempts to break even. The row is kept to make cold-start effects visible.
 
 ### Sequential Same-File Checks
 
@@ -382,11 +383,14 @@ Additional validation performed for the May 13, 2026 numbers:
 - `cache`: header/prior-declaration environment reuse metadata;
 - `elapsed_s`: wall-clock time for the check.
 
-## Relationship To LeanInteract
+## Backend Dependency
 
-LeanInteract provides the REPL process, incremental elaboration, command
-responses, proof states, and tactic stepping. LeanProbe packages one
-agent-oriented workflow on top: same-file declaration targeting, warm prior
-environments, replacement checking, and MCP-friendly feedback.
+[LeanInteract](https://github.com/augustepoiroux/LeanInteract) is LeanProbe's
+primary backend dependency. LeanInteract provides the Lean REPL process,
+incremental elaboration, command responses, proof states, tactic stepping, and
+the low-level interaction API.
 
-See LeanInteract: https://github.com/augustepoiroux/LeanInteract
+LeanProbe builds on that backend with package-level ergonomics for coding
+agents: file segmentation, same-file declaration targeting, warm prior
+environments, replacement checks, feedback annotation, CLI commands, MCP tools,
+and reproducible benchmark harnesses.
