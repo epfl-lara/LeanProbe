@@ -42,6 +42,60 @@ def test_target_replacement_extracts_named_declaration(tmp_path):
     assert "trivial" in replacement
 
 
+def test_partial_declaration_replaces_body_with_sorry():
+    text = "theorem demo (n : Nat) : n = n := by\n  rfl\n"
+
+    partial = benchmark._partial_declaration(text)
+
+    assert partial == "theorem demo (n : Nat) : n = n := by\n  sorry\n"
+
+
+def test_full_scenario_file_replaces_only_current_declaration(tmp_path):
+    lean_file = tmp_path / "Demo.lean"
+    lean_file.write_text(
+        "import Mathlib\n\n"
+        "theorem first : True := by\n"
+        "  trivial\n\n"
+        "theorem second : True := by\n"
+        "  trivial\n",
+        encoding="utf-8",
+    )
+    header, segments = benchmark.segment_file(lean_file.read_text(encoding="utf-8"))
+    scenario = {
+        "index": segments[0].index,
+        "text": "theorem first : True := by\n  sorry\n",
+    }
+
+    tmp_path_full = benchmark._lake_full_scenario_file(lean_file, header, segments, scenario)
+
+    try:
+        text = tmp_path_full.read_text(encoding="utf-8")
+    finally:
+        tmp_path_full.unlink()
+    assert "theorem first : True := by\n  sorry\n" in text
+    assert "theorem second : True := by\n  trivial\n" in text
+
+
+def test_scenario_status_accepts_expected_partial_sorry():
+    partial_status = {"process_ok": True, "has_errors": False, "has_sorry": True, "valid_without_sorry": False}
+    full_status = {"process_ok": True, "has_errors": False, "has_sorry": False, "valid_without_sorry": True}
+
+    assert benchmark._scenario_accepted(partial_status, variant="partial") is True
+    assert benchmark._scenario_accepted(full_status, variant="full") is True
+    assert benchmark._scenario_accepted({**partial_status, "has_sorry": False}, variant="partial") is False
+
+
+def test_lake_status_accepts_structured_adapter_json():
+    status = benchmark._lake_status(True, '{"success": true, "ok": false, "has_errors": false, "has_sorry": true}')
+
+    assert status == {
+        "process_ok": True,
+        "has_errors": False,
+        "has_sorry": True,
+        "valid_without_sorry": False,
+    }
+
+
 def test_benchmark_writes_result_json(tmp_path):
     result = {"success": True, "value": 1}
 
@@ -87,6 +141,28 @@ def test_run_text_command_reports_timeout(tmp_path):
     assert ok is False
     assert elapsed >= 1
     assert "timed out after 1s" in output
+
+
+def test_external_command_allows_json_braces(tmp_path):
+    original = tmp_path / "Original.lean"
+    target = tmp_path / "Candidate.lean"
+    original.write_text("theorem original : True := by\n  trivial\n", encoding="utf-8")
+    target.write_text("theorem candidate : True := by\n  trivial\n", encoding="utf-8")
+
+    ok, _elapsed, output = benchmark._run_external_command(
+        "python -c 'import json; print(json.dumps({\"success\": True, \"file\": \"{file}\"}))'",
+        project_root=tmp_path,
+        original_file=original,
+        lake_target=target,
+        theorem_id="candidate",
+        timeout_s=5,
+    )
+
+    assert ok is True
+    payload = benchmark._last_json_object(output)
+    assert payload is not None
+    assert payload["success"] is True
+    assert payload["file"] == str(target)
 
 
 def test_methodology_payload_names_surfaces(tmp_path):

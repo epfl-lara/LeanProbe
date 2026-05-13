@@ -10,9 +10,9 @@ from typing import Any
 
 from .benchmark import (
     _external_command_specs,
+    run_file_level_benchmark,
     run_benchmark,
     run_benchmark_suite,
-    run_queue_cutoff_benchmark,
 )
 from .core import LeanProbe
 
@@ -118,11 +118,25 @@ def build_parser() -> argparse.ArgumentParser:
     file_benchmark = sub.add_parser(
         "benchmark-file",
         parents=[common_parent],
-        help="Compare repeated same-file cutoff checks with LeanInteract env reuse",
+        help="Compare repeated same-file declaration checks with LeanInteract env reuse",
     )
     file_benchmark.add_argument("file_path")
     file_benchmark.add_argument("--runs", type=int, default=3)
-    file_benchmark.add_argument("--max-cutoffs", type=int, default=0, help="Limit declaration cutoffs; 0 means all")
+    file_benchmark.add_argument(
+        "--max-declarations",
+        dest="max_declarations",
+        type=int,
+        default=0,
+        help="Limit declarations; 0 means all",
+    )
+    file_benchmark.add_argument("--max-cutoffs", dest="max_declarations", type=int, help=argparse.SUPPRESS)
+    file_benchmark.add_argument("--skip-no-cache", action="store_true", help="Skip fresh-server no-cache comparison")
+    file_benchmark.add_argument(
+        "--external-command",
+        action="append",
+        default=[],
+        help="Additional full-file scenario verifier as NAME=COMMAND; placeholders: {file}, {original}, {cwd}, {theorem}",
+    )
     file_benchmark.add_argument("--results-dir", default="", help="Optional directory for raw JSON output")
     file_benchmark.add_argument("--label", default="", help="Optional benchmark label")
 
@@ -192,16 +206,22 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if payload.get("success") else 1
 
     if args.command == "benchmark-file":
-        payload = run_queue_cutoff_benchmark(
+        try:
+            external_commands = _external_command_specs(args.external_command)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        payload = run_file_level_benchmark(
             file_path=args.file_path,
             cwd=args.cwd or None,
             runs=args.runs,
-            max_cutoffs=args.max_cutoffs,
+            max_cutoffs=args.max_declarations,
             timeout_s=args.timeout_s,
             auto_build=args.auto_build,
             local_repl_path=args.local_repl_path or None,
             lake_path=args.lake_path,
             verbose=args.verbose,
+            include_no_cache=not args.skip_no_cache,
+            external_commands=external_commands,
             results_dir=args.results_dir or None,
             label=args.label,
         )

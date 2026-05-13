@@ -5,8 +5,11 @@ LeanInteract-backed REPL warm, reuses the elaborated imports and prior
 declarations in a file, and checks only the declaration an agent is currently
 editing.
 
-LeanProbe is not the final verifier. Use it for fast inner-loop feedback, then
-run `lake env lean File.lean`, `lake build`, or CI before accepting a change.
+LeanProbe returns real Lean results from LeanInteract: diagnostics, warnings,
+`sorry` detection, tactic metadata, and goal states. It is useful as an
+acceptance-style check for the Lean chunk it runs. Many projects should still
+run `lake env lean File.lean`, `lake build`, or CI for whole-file or whole-project
+release gates.
 
 ## Tools
 
@@ -187,18 +190,20 @@ The built-in benchmark compares only standalone, reproducible surfaces:
 - LeanProbe warm check: target declaration only, using cached env before target;
 - LeanProbe feedback: same target check with tactic/proof-state metadata;
 - LeanProbe no-cache check: fresh LeanProbe/LeanInteract server per attempt;
-- same-file cutoff Lake: temp file with header plus declarations up to cutoff;
-- same-file cutoff LeanInteract cumulative: one header env, full growing
-  declaration prefix each cutoff;
-- same-file cutoff LeanInteract delta: one header env, next declaration chunk
-  only.
+- same-file Lake prefix checks: for each partial/full scenario, temp file with
+  header plus accepted prior declarations plus the current declaration;
+- same-file Lake full-file checks: for each partial/full scenario, temp file
+  containing the whole source file with only the current declaration replaced;
+- same-file LeanProbe cached checks: one LeanInteract server reuses header and
+  prior declaration environments across partial/full scenarios;
+- same-file LeanProbe no-cache checks: fresh LeanProbe/LeanInteract server per
+  scenario;
 - optional external command: any user-provided shell verifier/wrapper timed
   with the same temp full file.
 
-Lean LSP and proof-context tools are useful diagnostics surfaces, but they are
-not equivalent final verifiers unless they ultimately run canonical Lean/Lake.
-Compare project-specific wrappers through `--external-command` or an
-out-of-tree adapter; LeanProbe itself stays independent.
+Lean LSP, MCP, and proof-context tools are useful diagnostics surfaces. Compare
+project-specific wrappers through `--external-command` or an out-of-tree adapter
+that exits nonzero on hard failure; LeanProbe itself stays independent.
 
 ## Current Results
 
@@ -272,20 +277,30 @@ noise would make the benchmark less transparent.
 
 ### Sequential Same-File Checks
 
-Run policy: 1 measured run per file, sequential execution, 5 declaration
-cutoffs per file. All Lake and LeanInteract cutoff statuses matched and all
-rows succeeded.
+Run policy: 1 measured run per file, sequential execution, 5 declarations per
+file. This benchmark models a file-level checking session:
 
-| Platform | File | Cutoffs | Lake temp cutoffs | LI cumulative | LI delta seq | Delta speedup |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| macOS | `analysis_real.lean` | 5 | 23.694s | 4.086s | 3.812s | 6.22x |
-| macOS | `algebra_order.lean` | 5 | 18.830s | 4.311s | 3.854s | 4.89x |
-| macOS | `sets_functions.lean` | 5 | 19.129s | 3.809s | 3.691s | 5.18x |
-| macOS | `number_theory_nat.lean` | 5 | 18.664s | 4.017s | 3.644s | 5.12x |
-| Linux | `analysis_real.lean` | 5 | 11.374s | 2.538s | 2.339s | 4.86x |
-| Linux | `algebra_order.lean` | 5 | 11.645s | 2.892s | 2.541s | 4.58x |
-| Linux | `sets_functions.lean` | 5 | 11.244s | 2.277s | 2.299s | 4.89x |
-| Linux | `number_theory_nat.lean` | 5 | 11.382s | 2.285s | 2.284s | 4.98x |
+1. check imports/header;
+2. for each declaration, check a partial `sorry` version and confirm `sorry` is
+   detected without hard errors;
+3. check the full declaration and require valid-without-sorry;
+4. advance the cached environment only after the full declaration succeeds.
+
+Raw JSON for these rows was written under
+`benchmark_results/file-level-local-full-2026-05-13/` and
+`benchmark_results/file-level-linux-full-2026-05-13/`. Those directories are
+ignored by git, so reruns do not pollute the package history.
+
+| Platform | File | Decls | Scenarios | Lake prefix | Lake full file | LeanProbe cached | LeanProbe no-cache | Cached / prefix Lake | Cached / full Lake | Cached / no-cache |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| macOS | `analysis_real.lean` | 5 | 10 | 67.992s | 40.216s | 4.775s | 44.699s | 14.24x | 8.42x | 9.36x |
+| macOS | `algebra_order.lean` | 5 | 10 | 46.870s | 48.163s | 4.339s | 40.953s | 10.80x | 11.10x | 9.44x |
+| macOS | `sets_functions.lean` | 5 | 10 | 45.421s | 42.237s | 3.916s | 37.797s | 11.60x | 10.79x | 9.65x |
+| macOS | `number_theory_nat.lean` | 5 | 10 | 36.474s | 36.648s | 3.789s | 36.736s | 9.63x | 9.67x | 9.70x |
+| Linux | `analysis_real.lean` | 5 | 10 | 22.765s | 22.958s | 2.515s | 24.890s | 9.05x | 9.13x | 9.90x |
+| Linux | `algebra_order.lean` | 5 | 10 | 23.186s | 23.489s | 2.547s | 25.147s | 9.10x | 9.22x | 9.87x |
+| Linux | `sets_functions.lean` | 5 | 10 | 22.679s | 22.567s | 2.384s | 24.195s | 9.51x | 9.47x | 10.15x |
+| Linux | `number_theory_nat.lean` | 5 | 10 | 22.593s | 22.829s | 2.301s | 24.086s | 9.82x | 9.92x | 10.47x |
 
 ## Reproduce
 
@@ -309,7 +324,9 @@ PYTHONPATH=src python -m lean_probe.cli benchmark-suite \
   --pretty
 ```
 
-Run one sequential same-file benchmark:
+Run one sequential same-file benchmark. By default this includes terminal Lake
+prefix checks, terminal Lake full-file checks, cached LeanProbe checks, and
+no-cache LeanProbe checks:
 
 ```bash
 PYTHONPATH=src python -m lean_probe.cli benchmark-file \
@@ -319,6 +336,23 @@ PYTHONPATH=src python -m lean_probe.cli benchmark-file \
   --results-dir benchmark_results/standalone-local-$(date +%F) \
   --pretty
 ```
+
+To compare another verifier, pass it as a shell command. `{file}` is the temp
+full candidate file for the current partial/full scenario:
+
+```bash
+PYTHONPATH=src python -m lean_probe.cli benchmark-file \
+  examples/lean/analysis_real.lean \
+  --cwd /path/to/mathlib-lake-project \
+  --runs 1 \
+  --external-command 'custom-verify=/path/to/verify-file.sh {file}' \
+  --pretty
+```
+
+MCP tools are usually not shell commands, so benchmark them through a small
+adapter script that calls the MCP tool for `{file}`, exits nonzero on hard
+failure, and prints a final JSON line with `success`, `ok`, `has_errors`, and
+`has_sorry`.
 
 Run Python tests:
 
@@ -330,8 +364,8 @@ Additional validation performed for the May 13, 2026 numbers:
 
 - every positive example file passed `lake env lean`;
 - all 20 repeated target benchmark cases returned `success=true`;
-- all 4 sequential same-file benchmark files reported matching successful Lake and
-  LeanInteract cutoff status;
+- all 4 sequential same-file benchmark files reported successful partial-sorry
+  and full-without-sorry scenarios for Lake and LeanProbe;
 - the same Python tests and benchmark suite passed on `larapc2`;
 - one intentionally broken replacement for `nat_mul_pos_bench` returned
   `ok=false`, `has_errors=true`, a concrete type-mismatch diagnostic, and

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import platform
+import re
 import statistics
 import subprocess
 import tempfile
@@ -98,6 +99,11 @@ def _has_hard_lean_error(output: str) -> bool:
     return False
 
 
+def _has_sorry_output(output: str) -> bool:
+    lowered = str(output or "").lower()
+    return "declaration uses 'sorry'" in lowered or "declaration uses `sorry`" in lowered
+
+
 def _last_json_object(output: str) -> dict[str, Any] | None:
     for line in reversed(str(output or "").splitlines()):
         candidate = line.strip()
@@ -144,12 +150,14 @@ def _run_external_command(
     theorem_id: str,
     timeout_s: int,
 ) -> tuple[bool, float, str]:
-    command = template.format(
-        file=str(lake_target),
-        original=str(original_file),
-        cwd=str(project_root),
-        theorem=theorem_id,
-    )
+    command = str(template)
+    for key, value in {
+        "file": str(lake_target),
+        "original": str(original_file),
+        "cwd": str(project_root),
+        "theorem": theorem_id,
+    }.items():
+        command = command.replace("{" + key + "}", value)
     ok, elapsed, output = _run_text_command(
         ["/bin/sh", "-lc", command],
         cwd=project_root,
@@ -235,6 +243,101 @@ def _target_replacement(file_path: Path, theorem_id: str) -> tuple[str, str]:
     if target is None:
         return "", "target declaration not found; benchmark used current file text"
     return target.text, ""
+
+
+def _partial_declaration(text: str) -> str:
+    match = re.search(r":=\s*by\b", text)
+    if match is None:
+        match = re.search(r":=", text)
+    if match is None:
+        return text
+    return text[: match.start()] + ":= by\n  sorry\n"
+
+
+def _lake_prefix_scenario_file(
+    original: Path,
+    header: str,
+    prior_segments: list[Any],
+    scenario_text: str,
+) -> Path:
+    tmp = tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=str(original.parent),
+        prefix=".lean_probe_file_",
+        suffix=".lean",
+        delete=False,
+    )
+    try:
+        tmp.write(header.rstrip() + "\n")
+        for segment in prior_segments:
+            tmp.write(segment.text.rstrip() + "\n")
+        tmp.write(scenario_text.rstrip() + "\n")
+    finally:
+        tmp.close()
+    return Path(tmp.name)
+
+
+def _lake_full_scenario_file(
+    original: Path,
+    header: str,
+    segments: list[Any],
+    scenario: Mapping[str, Any],
+) -> Path:
+    tmp = tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=str(original.parent),
+        prefix=".lean_probe_full_file_",
+        suffix=".lean",
+        delete=False,
+    )
+    try:
+        tmp.write(header.rstrip() + "\n")
+        scenario_index = int(scenario["index"])
+        for segment in segments:
+            text = str(scenario["text"]) if segment.index == scenario_index else segment.text
+            tmp.write(text.rstrip() + "\n")
+    finally:
+        tmp.close()
+    return Path(tmp.name)
+
+
+def _lake_status(ok: bool, output: str) -> dict[str, bool]:
+    payload = _last_json_object(output)
+    hard_error = _has_hard_lean_error(output)
+    has_sorry = _has_sorry_output(output)
+    process_ok = ok
+    if payload:
+        process_ok = ok and bool(payload.get("success", True))
+        if "has_errors" in payload:
+            hard_error = hard_error or bool(payload.get("has_errors"))
+        if "has_sorry" in payload:
+            has_sorry = has_sorry or bool(payload.get("has_sorry"))
+    valid_without_sorry = process_ok and not hard_error and not has_sorry
+    if payload and "ok" in payload:
+        valid_without_sorry = process_ok and bool(payload.get("ok")) and not hard_error and not has_sorry
+    return {
+        "process_ok": process_ok,
+        "has_errors": hard_error,
+        "has_sorry": has_sorry,
+        "valid_without_sorry": valid_without_sorry,
+    }
+
+
+def _probe_status(payload: Mapping[str, Any]) -> dict[str, bool]:
+    return {
+        "process_ok": bool(payload.get("success")),
+        "has_errors": bool(payload.get("has_errors")),
+        "has_sorry": bool(payload.get("has_sorry")),
+        "valid_without_sorry": bool(payload.get("ok")),
+    }
+
+
+def _scenario_accepted(status: Mapping[str, bool], *, variant: str) -> bool:
+    if variant == "partial":
+        return bool(status.get("process_ok")) and not bool(status.get("has_errors")) and bool(status.get("has_sorry"))
+    return bool(status.get("valid_without_sorry"))
 
 
 def _break_even_attempts(*, prepare_s: float, lake_p50: float, check_p50: float) -> int | None:
@@ -792,7 +895,7 @@ def run_queue_cutoff_benchmark(
     header, all_segments = segment_file(resolved.read_text(encoding="utf-8"))
     segments = all_segments[:max_cutoffs] if max_cutoffs and max_cutoffs > 0 else all_segments
     if not segments:
-        return {"success": False, "error": "No Lean declaration cutoffs found"}
+        return {"success": False, "error": "No Lean declarations found"}
 
     lake_totals: list[float] = []
     cumulative_totals: list[float] = []
@@ -907,6 +1010,413 @@ def run_queue_cutoff_benchmark(
     return result
 
 
+def _file_level_scenarios(segments: list[Any]) -> list[dict[str, Any]]:
+    scenarios: list[dict[str, Any]] = []
+    for segment in segments:
+        if segment.kind in {"theorem", "lemma", "example"}:
+            scenarios.append(
+                {
+                    "index": segment.index,
+                    "name": segment.name,
+                    "kind": segment.kind,
+                    "variant": "partial",
+                    "text": _partial_declaration(segment.text),
+                    "start_line": segment.start_line,
+                    "end_line": segment.end_line,
+                }
+            )
+        scenarios.append(
+            {
+                "index": segment.index,
+                "name": segment.name,
+                "kind": segment.kind,
+                "variant": "full",
+                "text": segment.text,
+                "start_line": segment.start_line,
+                "end_line": segment.end_line,
+            }
+        )
+    return scenarios
+
+
+def _run_lake_file_scenarios(
+    *,
+    project_root: Path,
+    file_path: Path,
+    header: str,
+    segments: list[Any],
+    scenarios: list[dict[str, Any]],
+    timeout_s: int,
+    lake_path: str | Path,
+) -> tuple[bool, float, list[dict[str, Any]]]:
+    total_elapsed = 0.0
+    prior_segments: list[Any] = []
+    segment_by_index = {segment.index: segment for segment in segments}
+    details: list[dict[str, Any]] = []
+    success = True
+    for scenario in scenarios:
+        tmp_path = _lake_prefix_scenario_file(file_path, header, prior_segments, str(scenario["text"]))
+        try:
+            ok, elapsed, output = _run_lake_check(project_root, tmp_path, timeout_s, lake_path=lake_path)
+        finally:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+        total_elapsed += elapsed
+        status = _lake_status(ok, output)
+        accepted = _scenario_accepted(status, variant=str(scenario["variant"]))
+        success = success and accepted
+        details.append(
+            {
+                "index": scenario["index"],
+                "name": scenario["name"],
+                "kind": scenario["kind"],
+                "variant": scenario["variant"],
+                "elapsed_s": round(elapsed, 3),
+                "accepted": accepted,
+                **status,
+                "output": output[-1000:],
+            }
+        )
+        if scenario["variant"] == "full" and status["valid_without_sorry"]:
+            prior_segments.append(segment_by_index[int(scenario["index"])])
+    return success, total_elapsed, details
+
+
+def _run_lake_full_file_scenarios(
+    *,
+    project_root: Path,
+    file_path: Path,
+    header: str,
+    all_segments: list[Any],
+    scenarios: list[dict[str, Any]],
+    timeout_s: int,
+    lake_path: str | Path,
+) -> tuple[bool, float, list[dict[str, Any]]]:
+    total_elapsed = 0.0
+    details: list[dict[str, Any]] = []
+    success = True
+    for scenario in scenarios:
+        tmp_path = _lake_full_scenario_file(file_path, header, all_segments, scenario)
+        try:
+            ok, elapsed, output = _run_lake_check(project_root, tmp_path, timeout_s, lake_path=lake_path)
+        finally:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+        total_elapsed += elapsed
+        status = _lake_status(ok, output)
+        accepted = _scenario_accepted(status, variant=str(scenario["variant"]))
+        success = success and accepted
+        details.append(
+            {
+                "index": scenario["index"],
+                "name": scenario["name"],
+                "kind": scenario["kind"],
+                "variant": scenario["variant"],
+                "elapsed_s": round(elapsed, 3),
+                "accepted": accepted,
+                **status,
+                "output": output[-1000:],
+            }
+        )
+    return success, total_elapsed, details
+
+
+def _run_external_file_scenarios(
+    *,
+    template: str,
+    project_root: Path,
+    file_path: Path,
+    header: str,
+    all_segments: list[Any],
+    scenarios: list[dict[str, Any]],
+    timeout_s: int,
+) -> tuple[bool, float, list[dict[str, Any]]]:
+    total_elapsed = 0.0
+    details: list[dict[str, Any]] = []
+    success = True
+    for scenario in scenarios:
+        tmp_path = _lake_full_scenario_file(file_path, header, all_segments, scenario)
+        try:
+            ok, elapsed, output = _run_external_command(
+                template,
+                project_root=project_root,
+                original_file=file_path,
+                lake_target=tmp_path,
+                theorem_id=str(scenario["name"]),
+                timeout_s=timeout_s,
+            )
+        finally:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+        total_elapsed += elapsed
+        status = _lake_status(ok, output)
+        accepted = _scenario_accepted(status, variant=str(scenario["variant"]))
+        success = success and accepted
+        details.append(
+            {
+                "index": scenario["index"],
+                "name": scenario["name"],
+                "kind": scenario["kind"],
+                "variant": scenario["variant"],
+                "elapsed_s": round(elapsed, 3),
+                "accepted": accepted,
+                **status,
+                "output": output[-1000:],
+            }
+        )
+    return success, total_elapsed, details
+
+
+def _run_probe_file_scenarios(
+    *,
+    file_path: Path,
+    project_root: Path,
+    scenarios: list[dict[str, Any]],
+    timeout_s: int,
+    auto_build: bool,
+    local_repl_path: str | Path | None,
+    lake_path: str | Path,
+    verbose: bool,
+    reuse_cache: bool,
+) -> tuple[bool, float, list[dict[str, Any]]]:
+    total_elapsed = 0.0
+    details: list[dict[str, Any]] = []
+    success = True
+    probe: LeanProbe | None = None
+    if reuse_cache:
+        probe = LeanProbe(
+            auto_build=auto_build,
+            local_repl_path=local_repl_path,
+            lake_path=lake_path,
+            verbose=verbose,
+        )
+    try:
+        for scenario in scenarios:
+            scenario_start = time.perf_counter()
+            current_probe = probe
+            if current_probe is None:
+                current_probe = LeanProbe(
+                    auto_build=auto_build,
+                    local_repl_path=local_repl_path,
+                    lake_path=lake_path,
+                    verbose=verbose,
+                )
+            try:
+                payload = current_probe.check_target(
+                    file_path,
+                    theorem_id=str(scenario["name"]),
+                    cwd=project_root,
+                    replacement=str(scenario["text"]),
+                    timeout_s=timeout_s,
+                )
+            finally:
+                if not reuse_cache:
+                    current_probe.close()
+            wall_elapsed = time.perf_counter() - scenario_start
+            lean_elapsed = float(payload.get("elapsed_s", 0.0) or 0.0)
+            total_elapsed += wall_elapsed
+            status = _probe_status(payload)
+            accepted = _scenario_accepted(status, variant=str(scenario["variant"]))
+            success = success and accepted
+            details.append(
+                {
+                    "index": scenario["index"],
+                    "name": scenario["name"],
+                    "kind": scenario["kind"],
+                    "variant": scenario["variant"],
+                    "elapsed_s": round(wall_elapsed, 3),
+                    "lean_elapsed_s": round(lean_elapsed, 3),
+                    "accepted": accepted,
+                    **status,
+                    "cache": payload.get("cache", {}),
+                    "output": str(payload.get("output", ""))[:1000],
+                }
+            )
+    finally:
+        if probe is not None:
+            probe.close()
+    return success, total_elapsed, details
+
+
+def run_file_level_benchmark(
+    *,
+    file_path: str | Path,
+    cwd: str | Path | None = None,
+    runs: int = 3,
+    max_cutoffs: int = 0,
+    timeout_s: int = 120,
+    auto_build: bool = False,
+    local_repl_path: str | Path | None = None,
+    lake_path: str | Path = "lake",
+    verbose: bool = False,
+    include_no_cache: bool = True,
+    external_commands: Mapping[str, str] | None = None,
+    results_dir: str | Path | None = None,
+    label: str = "",
+) -> dict[str, Any]:
+    project_root = find_lean_project_root(cwd or file_path)
+    if project_root is None:
+        return {"success": False, "error": "Lean project root not detected"}
+    resolved = _resolve_project_file(project_root, file_path)
+    if not resolved.is_file():
+        return {"success": False, "error": f"Lean file not found: {resolved}"}
+
+    header, all_segments = segment_file(resolved.read_text(encoding="utf-8"))
+    segments = all_segments[:max_cutoffs] if max_cutoffs and max_cutoffs > 0 else all_segments
+    if not segments:
+        return {"success": False, "error": "No Lean declarations found"}
+    scenarios = _file_level_scenarios(segments)
+
+    lake_prefix_totals: list[float] = []
+    lake_full_totals: list[float] = []
+    cached_totals: list[float] = []
+    no_cache_totals: list[float] = []
+    external = dict(external_commands or {})
+    external_totals: dict[str, list[float]] = {name: [] for name in external}
+    last_details: dict[str, list[dict[str, Any]]] = {}
+    failures: list[dict[str, str]] = []
+    for _ in range(max(1, runs)):
+        lake_prefix_ok, lake_prefix_elapsed, lake_prefix_details = _run_lake_file_scenarios(
+            project_root=project_root,
+            file_path=resolved,
+            header=header,
+            segments=segments,
+            scenarios=scenarios,
+            timeout_s=timeout_s,
+            lake_path=lake_path,
+        )
+        lake_prefix_totals.append(lake_prefix_elapsed)
+        last_details["lake_env_lean_prefix"] = lake_prefix_details
+        if not lake_prefix_ok:
+            failures.append({"kind": "lake_env_lean_prefix", "output": "one or more file scenarios failed"})
+
+        lake_full_ok, lake_full_elapsed, lake_full_details = _run_lake_full_file_scenarios(
+            project_root=project_root,
+            file_path=resolved,
+            header=header,
+            all_segments=all_segments,
+            scenarios=scenarios,
+            timeout_s=timeout_s,
+            lake_path=lake_path,
+        )
+        lake_full_totals.append(lake_full_elapsed)
+        last_details["lake_env_lean_full_file"] = lake_full_details
+        if not lake_full_ok:
+            failures.append({"kind": "lake_env_lean_full_file", "output": "one or more full-file scenarios failed"})
+
+        for name, template in external.items():
+            external_ok, external_elapsed, external_details = _run_external_file_scenarios(
+                template=template,
+                project_root=project_root,
+                file_path=resolved,
+                header=header,
+                all_segments=all_segments,
+                scenarios=scenarios,
+                timeout_s=timeout_s,
+            )
+            external_totals[name].append(external_elapsed)
+            last_details[f"external_command:{name}"] = external_details
+            if not external_ok:
+                failures.append({"kind": f"external_command:{name}", "output": "one or more external-command scenarios failed"})
+
+        cached_ok, cached_elapsed, cached_details = _run_probe_file_scenarios(
+            file_path=resolved,
+            project_root=project_root,
+            scenarios=scenarios,
+            timeout_s=timeout_s,
+            auto_build=auto_build,
+            local_repl_path=local_repl_path,
+            lake_path=lake_path,
+            verbose=verbose,
+            reuse_cache=True,
+        )
+        cached_totals.append(cached_elapsed)
+        last_details["lean_probe_cached"] = cached_details
+        if not cached_ok:
+            failures.append({"kind": "lean_probe_cached", "output": "one or more cached file scenarios failed"})
+
+        if include_no_cache:
+            no_cache_ok, no_cache_elapsed, no_cache_details = _run_probe_file_scenarios(
+                file_path=resolved,
+                project_root=project_root,
+                scenarios=scenarios,
+                timeout_s=timeout_s,
+                auto_build=auto_build,
+                local_repl_path=local_repl_path,
+                lake_path=lake_path,
+                verbose=verbose,
+                reuse_cache=False,
+            )
+            no_cache_totals.append(no_cache_elapsed)
+            last_details["lean_probe_no_cache"] = no_cache_details
+            if not no_cache_ok:
+                failures.append({"kind": "lean_probe_no_cache", "output": "one or more no-cache file scenarios failed"})
+
+    lake_prefix = _summary(lake_prefix_totals)
+    lake_full = _summary(lake_full_totals)
+    cached = _summary(cached_totals)
+    no_cache = _summary(no_cache_totals)
+    external_summaries = {name: _summary(times) for name, times in external_totals.items()}
+    lake_prefix_p50 = float(lake_prefix.get("p50", 0.0) or 0.0)
+    lake_full_p50 = float(lake_full.get("p50", 0.0) or 0.0)
+    cached_p50 = float(cached.get("p50", 0.0) or 0.0)
+    no_cache_p50 = float(no_cache.get("p50", 0.0) or 0.0)
+    result = {
+        "success": not failures,
+        "label": label,
+        "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "project_root": str(project_root),
+        "file": str(resolved),
+        "runs": runs,
+        "declaration_count": len(segments),
+        "scenario_count": len(scenarios),
+        "platform": _platform_payload(),
+        "benchmark_policy": {
+            "lake_env_lean_prefix": "for each scenario, write header plus accepted prior declarations plus current partial/full declaration, then run `lake env lean`",
+            "lake_env_lean_full_file": "for each scenario, write the whole file with the current partial/full declaration substituted, then run `lake env lean`",
+            "lean_probe_cached": "one LeanInteract server; reuse header and prior declaration envs across partial/full same-file checks",
+            "lean_probe_no_cache": "fresh LeanProbe/LeanInteract server per scenario",
+            "external_commands": "optional shell commands run against the same full-file scenario temp files via `{file}`",
+            "partial_status": "partial declarations contain `sorry`; success means no hard errors and sorry is detected",
+            "full_status": "full declarations must be valid without sorry",
+        },
+        "scenarios": [
+            {
+                "index": scenario["index"],
+                "kind": scenario["kind"],
+                "name": scenario["name"],
+                "variant": scenario["variant"],
+                "start_line": scenario["start_line"],
+                "end_line": scenario["end_line"],
+            }
+            for scenario in scenarios
+        ],
+        "lake_env_lean_prefix": lake_prefix,
+        "lake_env_lean_full_file": lake_full,
+        "lean_probe_cached": cached,
+        "lean_probe_no_cache": no_cache if include_no_cache else None,
+        "external_commands": external_summaries or None,
+        "speedup_p50": {
+            "cached_vs_lake": round(lake_prefix_p50 / cached_p50, 2) if cached_p50 else 0.0,
+            "cached_vs_lake_prefix": round(lake_prefix_p50 / cached_p50, 2) if cached_p50 else 0.0,
+            "cached_vs_lake_full_file": round(lake_full_p50 / cached_p50, 2) if cached_p50 else 0.0,
+            "cached_vs_no_cache": round(no_cache_p50 / cached_p50, 2) if no_cache_p50 and cached_p50 else 0.0,
+        },
+        "last_scenario_details": last_details,
+        "failures": failures[:5],
+    }
+    result_path = _write_result_json(result, results_dir, label or f"file-level-{resolved.stem}")
+    if result_path:
+        result["result_path"] = result_path
+    return result
+
+
 def main() -> None:
     import argparse
 
@@ -952,11 +1462,19 @@ def main() -> None:
     suite.add_argument("--results-dir", default="")
     suite.add_argument("--pretty", action="store_true")
 
-    file_benchmark = sub.add_parser("file", help="Run same-file sequential cutoff benchmark")
+    file_benchmark = sub.add_parser("file", help="Run same-file sequential declaration benchmark")
     file_benchmark.add_argument("file_path")
     file_benchmark.add_argument("--cwd", default="")
     file_benchmark.add_argument("--runs", type=int, default=3)
-    file_benchmark.add_argument("--max-cutoffs", type=int, default=0)
+    file_benchmark.add_argument("--max-declarations", dest="max_declarations", type=int, default=0)
+    file_benchmark.add_argument("--max-cutoffs", dest="max_declarations", type=int, help=argparse.SUPPRESS)
+    file_benchmark.add_argument("--skip-no-cache", action="store_true")
+    file_benchmark.add_argument(
+        "--external-command",
+        action="append",
+        default=[],
+        help="Additional full-file scenario verifier as NAME=COMMAND; placeholders: {file}, {original}, {cwd}, {theorem}",
+    )
     file_benchmark.add_argument("--timeout-s", type=int, default=120)
     file_benchmark.add_argument("--results-dir", default="")
     file_benchmark.add_argument("--label", default="")
@@ -996,12 +1514,14 @@ def main() -> None:
             case_labels=args.case or None,
         )
     else:
-        result = run_queue_cutoff_benchmark(
+        result = run_file_level_benchmark(
             file_path=args.file_path,
             cwd=args.cwd or None,
             runs=args.runs,
-            max_cutoffs=args.max_cutoffs,
+            max_cutoffs=args.max_declarations,
             timeout_s=args.timeout_s,
+            include_no_cache=not args.skip_no_cache,
+            external_commands=external_commands,
             results_dir=args.results_dir or None,
             label=args.label,
         )

@@ -2,7 +2,7 @@
 
 The checker is intentionally scoped to the agent inner loop: same-file target
 checks, replacement declaration screening, rich feedback, and tactic stepping.
-Final acceptance should still use Lake or CI.
+Whole-file or whole-project release gates can still use Lake or CI.
 """
 
 from __future__ import annotations
