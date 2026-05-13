@@ -396,6 +396,7 @@ def _response_payload(
     checked_text: str,
     timed_out: bool = False,
     error: str = "",
+    error_code: str = "",
 ) -> dict[str, Any]:
     line_offset = (int(target.start_line) - 1) if target is not None else 0
     messages = _message_payloads(response, line_offset=line_offset) if response is not None else []
@@ -412,6 +413,7 @@ def _response_payload(
         for item in messages
         if str(item.get("message", "") or "").strip()
     )
+    resolved_error_code = error_code or _error_code_for_message(error)
     return {
         "success": not bool(error),
         "ok": valid_without_sorry and not has_errors and not has_sorry,
@@ -426,6 +428,7 @@ def _response_payload(
         "has_errors": has_errors,
         "has_sorry": has_sorry,
         "timed_out": timed_out,
+        "error_code": resolved_error_code if error else "",
         "error": error,
         "elapsed_s": round(float(elapsed_s), 3),
         "command": f"lean_probe {action}",
@@ -454,6 +457,46 @@ def _dead_server_error(error: str) -> bool:
             "process has exited",
         )
     )
+
+
+def _timeout_error_text(error: str) -> bool:
+    lowered = str(error or "").lower()
+    return "timeout" in lowered or "timed out" in lowered
+
+
+def _timeout_exception(exc: BaseException) -> bool:
+    return isinstance(exc, TimeoutError) or _timeout_error_text(type(exc).__name__) or _timeout_error_text(str(exc))
+
+
+def _error_code_for_message(error: str) -> str:
+    lowered = str(error or "").lower()
+    if not lowered:
+        return ""
+    if _timeout_error_text(lowered):
+        return "timeout"
+    if _dead_server_error(lowered):
+        return "dead_server"
+    if "lean-interact unavailable" in lowered:
+        return "lean_interact_unavailable"
+    if "failed to start leaninteract server" in lowered:
+        return "lean_interact_start_failed"
+    if "lean project root not detected" in lowered:
+        return "no_project_root"
+    if "lean file not found" in lowered:
+        return "file_not_found"
+    if "target declaration not found" in lowered:
+        return "target_not_found"
+    if "header warmup failed" in lowered:
+        return "header_failed"
+    if "failed to build env before target" in lowered:
+        return "prior_decl_failed"
+    return "backend_error"
+
+
+def _error_code_for_exception(exc: BaseException) -> str:
+    if _timeout_exception(exc):
+        return "timeout"
+    return _error_code_for_message(str(exc))
 
 
 class LeanProbe:
@@ -487,10 +530,13 @@ class LeanProbe:
         project_root = self._resolve_project_root(cwd)
         repl_dir = self._select_repl_dir(project_root) if project_root else None
         degraded: list[str] = []
+        degraded_codes: list[str] = []
         if import_error:
             degraded.append(import_error)
+            degraded_codes.append("lean_interact_unavailable")
         if project_root is None:
             degraded.append("Lean project root not detected")
+            degraded_codes.append("no_project_root")
         return {
             "available": not import_error and bool(project_root),
             "project_root": str(project_root or ""),
@@ -499,6 +545,7 @@ class LeanProbe:
                 {"project_root": project, "file": file_path} for project, file_path in self._sessions.keys()
             ],
             "degraded_reasons": degraded,
+            "degraded_codes": degraded_codes,
         }
 
     def prepare_file(
@@ -575,10 +622,12 @@ class LeanProbe:
                 "backend": "lean_interact",
                 "tool": "lean_probe",
                 "action": "state",
+                "timed_out": False,
+                "error_code": _error_code_for_message(error),
                 "error": error,
             }
         self._code_sessions[session_id] = session
-        response, elapsed, run_error = self._run_command(
+        response, elapsed, run_error, run_error_code, timed_out = self._run_command(
             session.server,
             code,
             env=None,
@@ -598,6 +647,8 @@ class LeanProbe:
             "session_id": session_id,
             "env": getattr(response, "env", None) if response is not None else None,
             "has_errors": has_errors,
+            "timed_out": timed_out,
+            "error_code": run_error_code if run_error else "",
             "error": run_error,
             "elapsed_s": round(elapsed, 3),
             "messages": messages,
@@ -622,6 +673,8 @@ class LeanProbe:
                 "tool": "lean_probe",
                 "action": "step",
                 "session_id": session_id,
+                "timed_out": False,
+                "error_code": "unknown_session",
                 "error": "unknown LeanProbe proof session",
             }
         _, ProofStep, _, _, _, import_error = _import_lean_interact()
@@ -633,6 +686,8 @@ class LeanProbe:
                 "tool": "lean_probe",
                 "action": "step",
                 "session_id": session_id,
+                "timed_out": False,
+                "error_code": "lean_interact_unavailable",
                 "error": import_error,
             }
         start = time.perf_counter()
@@ -653,6 +708,7 @@ class LeanProbe:
                 "elapsed_s": round(elapsed, 3),
             }
         except Exception as exc:
+            error_code = _error_code_for_exception(exc)
             return {
                 "success": False,
                 "ok": False,
@@ -660,6 +716,8 @@ class LeanProbe:
                 "tool": "lean_probe",
                 "action": "step",
                 "session_id": session_id,
+                "timed_out": error_code == "timeout",
+                "error_code": error_code,
                 "error": str(exc),
                 "elapsed_s": round(time.perf_counter() - start, 3),
             }
@@ -799,10 +857,10 @@ class LeanProbe:
         timeout_s: int,
         retry: Any,
         retry_dead_server: bool = True,
-    ) -> tuple[Any | None, float, str]:
+    ) -> tuple[Any | None, float, str, str, bool]:
         Command, _, _, _, _, import_error = _import_lean_interact()
         if Command is None:
-            return None, 0.0, import_error
+            return None, 0.0, import_error, "lean_interact_unavailable", False
         start = time.perf_counter()
         try:
             request = Command(cmd=cmd, all_tactics=True) if include_tactics else Command(cmd=cmd)
@@ -812,11 +870,14 @@ class LeanProbe:
         except Exception as exc:
             elapsed = time.perf_counter() - start
             error = str(exc)
-            if retry_dead_server and _dead_server_error(error):
+            error_code = _error_code_for_exception(exc)
+            timed_out = error_code == "timeout"
+            if retry_dead_server and error_code == "dead_server":
                 restarted_server, restart_error = retry()
                 if restarted_server is None:
-                    return None, elapsed, restart_error or error
-                response, retry_elapsed, retry_error = self._run_command(
+                    final_error = restart_error or error
+                    return None, elapsed, final_error, _error_code_for_message(final_error), _timeout_error_text(final_error)
+                response, retry_elapsed, retry_error, retry_error_code, retry_timed_out = self._run_command(
                     restarted_server,
                     cmd,
                     env=env,
@@ -825,20 +886,20 @@ class LeanProbe:
                     retry=retry,
                     retry_dead_server=False,
                 )
-                return response, elapsed + retry_elapsed, retry_error
-            return None, time.perf_counter() - start, str(exc)
-        return response, time.perf_counter() - start, ""
+                return response, elapsed + retry_elapsed, retry_error, retry_error_code, retry_timed_out
+            return None, time.perf_counter() - start, error, error_code, timed_out
+        return response, time.perf_counter() - start, "", "", False
 
-    def _ensure_header(self, session: _IncrementalSession, header: str, *, timeout_s: int) -> tuple[bool, str, float]:
+    def _ensure_header(self, session: _IncrementalSession, header: str, *, timeout_s: int) -> tuple[bool, str, float, str, bool]:
         header_hash = _sha(header)
         if session.header_hash == header_hash and session.header_env is not None:
-            return True, "", 0.0
+            return True, "", 0.0, "", False
         if session.header_hash and session.header_hash != header_hash:
             restarted, error = self._restart_session(session)
             if restarted is None:
-                return False, error, 0.0
+                return False, error, 0.0, _error_code_for_message(error), _timeout_error_text(error)
             session.__dict__.update(restarted.__dict__)
-        response, elapsed, error = self._run_command(
+        response, elapsed, error, error_code, timed_out = self._run_command(
             session.server,
             header,
             env=None,
@@ -847,14 +908,14 @@ class LeanProbe:
             retry=lambda: self._restart_incremental_server(session),
         )
         if error:
-            return False, error, elapsed
+            return False, error, elapsed, error_code, timed_out
         if response is None or bool(response.has_errors()):
-            return False, "LeanInteract header warmup failed", elapsed
+            return False, "LeanInteract header warmup failed", elapsed, "header_failed", False
         session.header_hash = header_hash
         session.header_env = getattr(response, "env", None)
         session.checkpoints.clear()
         session.segment_names.clear()
-        return True, "", elapsed
+        return True, "", elapsed, "", False
 
     def _ensure_env_before(
         self,
@@ -863,7 +924,7 @@ class LeanProbe:
         target_index: int,
         *,
         timeout_s: int,
-    ) -> tuple[int | None, str, float, bool]:
+    ) -> tuple[int | None, str, float, bool, str, bool]:
         env = session.header_env
         total_elapsed = 0.0
         cache_hit = True
@@ -878,7 +939,7 @@ class LeanProbe:
                 env = checkpoint.after_env
                 continue
             cache_hit = False
-            response, elapsed, error = self._run_command(
+            response, elapsed, error, error_code, timed_out = self._run_command(
                 session.server,
                 segment.text,
                 env=env,
@@ -888,17 +949,24 @@ class LeanProbe:
             )
             total_elapsed += elapsed
             if error:
-                return None, error, total_elapsed, cache_hit
+                return None, error, total_elapsed, cache_hit, error_code, timed_out
             if response is None or bool(response.has_errors()):
                 messages = _message_payloads(response, line_offset=segment.start_line - 1, limit=4) if response is not None else []
                 summary = _format_message_summary(messages)
                 detail = f": {summary}" if summary else ""
-                return None, f"failed to build env before target at {segment.name or segment.index}{detail}", total_elapsed, cache_hit
+                return (
+                    None,
+                    f"failed to build env before target at {segment.name or segment.index}{detail}",
+                    total_elapsed,
+                    cache_hit,
+                    "prior_decl_failed",
+                    False,
+                )
             after_env = getattr(response, "env", None)
             session.checkpoints[segment.index] = _Checkpoint(before_env=env, after_env=after_env, text_hash=segment.text_hash)
             session.segment_names[segment.index] = segment.name
             env = after_env
-        return env, "", total_elapsed, cache_hit
+        return env, "", total_elapsed, cache_hit, "", False
 
     def _check(
         self,
@@ -920,6 +988,8 @@ class LeanProbe:
                 "backend": "lean_interact",
                 "tool": "lean_probe",
                 "action": normalized_action,
+                "timed_out": False,
+                "error_code": "no_project_root",
                 "error": "Lean project root not detected",
             }
         resolved = self._resolve_file_path(file_path, project_root)
@@ -931,6 +1001,8 @@ class LeanProbe:
                 "tool": "lean_probe",
                 "action": normalized_action,
                 "file": str(resolved),
+                "timed_out": False,
+                "error_code": "file_not_found",
                 "error": "Lean file not found",
             }
         text = resolved.read_text(encoding="utf-8")
@@ -944,9 +1016,15 @@ class LeanProbe:
                 "tool": "lean_probe",
                 "action": normalized_action,
                 "file": str(resolved),
+                "timed_out": False,
+                "error_code": _error_code_for_message(error),
                 "error": error,
             }
-        ok_header, header_error, header_elapsed = self._ensure_header(session, header, timeout_s=timeout_s)
+        ok_header, header_error, header_elapsed, header_error_code, header_timed_out = self._ensure_header(
+            session,
+            header,
+            timeout_s=timeout_s,
+        )
         if not ok_header:
             return {
                 "success": False,
@@ -955,13 +1033,28 @@ class LeanProbe:
                 "tool": "lean_probe",
                 "action": normalized_action,
                 "file": str(resolved),
+                "timed_out": header_timed_out,
+                "error_code": header_error_code or _error_code_for_message(header_error),
                 "error": header_error,
                 "elapsed_s": round(header_elapsed, 3),
             }
         if normalized_action == "prepare":
             target = _find_segment(segments, theorem_id) if theorem_id else None
+            if theorem_id and target is None:
+                return {
+                    "success": False,
+                    "ok": False,
+                    "backend": "lean_interact",
+                    "tool": "lean_probe",
+                    "action": normalized_action,
+                    "file": str(resolved),
+                    "target": theorem_id,
+                    "timed_out": False,
+                    "error_code": "target_not_found",
+                    "error": "target declaration not found",
+                }
             if target is not None:
-                env, env_error, env_elapsed, cache_hit = self._ensure_env_before(
+                env, env_error, env_elapsed, cache_hit, env_error_code, env_timed_out = self._ensure_env_before(
                     session,
                     segments,
                     target.index,
@@ -977,6 +1070,8 @@ class LeanProbe:
                     "target": target.name,
                     "target_range": {"start_line": target.start_line, "end_line": target.end_line},
                     "elapsed_s": round(header_elapsed + env_elapsed, 3),
+                    "timed_out": env_timed_out,
+                    "error_code": env_error_code if env_error else "",
                     "error": env_error,
                     "cache": {"header_env": session.header_env, "env_before": env, "cache_hit": cache_hit},
                 }
@@ -1001,9 +1096,11 @@ class LeanProbe:
                 "action": normalized_action,
                 "file": str(resolved),
                 "target": theorem_id,
+                "timed_out": False,
+                "error_code": "target_not_found",
                 "error": "target declaration not found",
             }
-        env_before, env_error, env_elapsed, cache_hit = self._ensure_env_before(
+        env_before, env_error, env_elapsed, cache_hit, env_error_code, env_timed_out = self._ensure_env_before(
             session,
             segments,
             target.index,
@@ -1018,13 +1115,15 @@ class LeanProbe:
                 "action": normalized_action,
                 "file": str(resolved),
                 "target": target.name,
+                "timed_out": env_timed_out,
+                "error_code": env_error_code or _error_code_for_message(env_error),
                 "error": env_error,
                 "elapsed_s": round(env_elapsed, 3),
             }
         checked_text = str(replacement or "") or target.text
         want_tactics = include_tactics or normalized_action == "feedback"
         payload_include_tactics = want_tactics
-        response, check_elapsed, check_error = self._run_command(
+        response, check_elapsed, check_error, check_error_code, check_timed_out = self._run_command(
             session.server,
             checked_text,
             env=env_before,
@@ -1040,7 +1139,7 @@ class LeanProbe:
                 else False
             )
             if has_errors or not valid_without_sorry or _has_sorry(response):
-                tactic_response, tactic_elapsed, tactic_error = self._run_command(
+                tactic_response, tactic_elapsed, tactic_error, _tactic_error_code, _tactic_timed_out = self._run_command(
                     session.server,
                     checked_text,
                     env=env_before,
@@ -1071,5 +1170,7 @@ class LeanProbe:
             cache_hit=cache_hit,
             include_tactics=payload_include_tactics,
             checked_text=checked_text,
+            timed_out=check_timed_out,
             error=check_error,
+            error_code=check_error_code,
         )

@@ -170,6 +170,71 @@ def test_segment_file_ignores_keywords_inside_comments_and_strings():
     assert [segment.name for segment in segments] == ["real", "actual"]
 
 
+def test_segment_file_recognizes_instance_declarations():
+    _header, segments = segment_file(
+        "\n".join(
+            [
+                "import Mathlib",
+                "",
+                "instance demoInst : Inhabited Nat := ⟨0⟩",
+                "",
+            ]
+        )
+    )
+
+    assert len(segments) == 1
+    assert segments[0].kind == "instance"
+    assert segments[0].name == "demoInst"
+
+
+def test_find_segment_matches_qualified_and_short_names():
+    _header, segments = segment_file("namespace N\n\ntheorem demo : True := by\n  trivial\n\nend N\n")
+
+    assert core._find_segment(segments, "demo").name == "demo"
+    assert core._find_segment(segments, "N.demo").name == "demo"
+    assert core._find_segment(segments, "missing") is None
+
+
+def test_feedback_lean_preserves_indentation_and_truncates():
+    text = "theorem demo : True := by\n  exact False.elim ?h\n"
+    messages = [
+        {
+            "severity": "error",
+            "message": "x" * 400,
+            "start": {"line": 2, "column": 2},
+        }
+    ]
+    tactics = [{"goals": "⊢ True", "start": {"line": 2, "column": 2}}]
+
+    feedback = core._feedback_lean(text, messages, tactics)
+
+    assert "  /- <feedback>" in feedback
+    assert "-- proof state: ⊢ True" in feedback
+    assert "x" * 260 not in feedback
+
+
+def test_dead_server_error_tokens_are_stable():
+    for text in [
+        "Lean server is not running",
+        "broken pipe",
+        "connection reset by peer",
+        "process has exited",
+    ]:
+        assert core._dead_server_error(text) is True
+
+
+def test_capabilities_reports_degraded_codes(monkeypatch, tmp_path):
+    monkeypatch.setattr(core, "_import_lean_interact", lambda: (None, None, None, None, None, "lean-interact unavailable: missing"))
+    monkeypatch.setattr(LeanProbe, "_resolve_project_root", lambda self, cwd, file_path=None: None)
+    probe = LeanProbe()
+
+    payload = probe.capabilities(tmp_path)
+
+    assert payload["available"] is False
+    assert "lean_interact_unavailable" in payload["degraded_codes"]
+    assert "no_project_root" in payload["degraded_codes"]
+
+
 def test_check_target_reuses_header_and_prior_declaration_env(monkeypatch, tmp_path):
     servers = _install_fake_lean_interact(monkeypatch)
     project, target = _write_project(
@@ -238,6 +303,109 @@ def test_check_target_reports_chunk_and_file_locations_on_failure(monkeypatch, t
     assert servers[0].runs[-1]["all_tactics"] is True
 
 
+def test_check_target_success_does_not_rerun_with_tactics(monkeypatch, tmp_path):
+    servers = _install_fake_lean_interact(monkeypatch)
+    project, target = _write_project(
+        tmp_path,
+        "\n".join(
+            [
+                "import Mathlib",
+                "",
+                "theorem demo : True := by",
+                "  trivial",
+                "",
+            ]
+        ),
+    )
+    probe = LeanProbe()
+
+    payload = probe.check_target(target, theorem_id="demo", cwd=project)
+
+    assert payload["ok"] is True
+    assert [run["all_tactics"] for run in servers[0].runs] == [False, False]
+
+
+def test_target_not_found_returns_error_code(monkeypatch, tmp_path):
+    _install_fake_lean_interact(monkeypatch)
+    project, target = _write_project(tmp_path, "theorem demo : True := by\n  trivial\n")
+    probe = LeanProbe()
+
+    payload = probe.check_target(target, theorem_id="missing", cwd=project)
+
+    assert payload["success"] is False
+    assert payload["error_code"] == "target_not_found"
+
+
+def test_prepare_target_not_found_returns_error_code(monkeypatch, tmp_path):
+    _install_fake_lean_interact(monkeypatch)
+    project, target = _write_project(tmp_path, "theorem demo : True := by\n  trivial\n")
+    probe = LeanProbe()
+
+    payload = probe.prepare_file(target, theorem_id="missing", cwd=project)
+
+    assert payload["success"] is False
+    assert payload["error_code"] == "target_not_found"
+
+
+def test_header_change_restarts_incremental_session(monkeypatch, tmp_path):
+    servers = _install_fake_lean_interact(monkeypatch)
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  trivial\n",
+    )
+    probe = LeanProbe()
+
+    assert probe.check_target(target, theorem_id="demo", cwd=project)["ok"] is True
+    target.write_text("import Std\n\ntheorem demo : True := by\n  trivial\n", encoding="utf-8")
+    assert probe.check_target(target, theorem_id="demo", cwd=project)["ok"] is True
+
+    assert len(servers) == 2
+
+
+def test_resolve_file_path_prefers_project_root(tmp_path):
+    project = tmp_path / "Project"
+    project.mkdir()
+    probe = LeanProbe()
+
+    assert probe._resolve_file_path("Demo/Main.lean", project) == (project / "Demo" / "Main.lean").resolve()
+
+
+def test_timeout_error_sets_structured_fields(monkeypatch, tmp_path):
+    _install_fake_lean_interact(monkeypatch)
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem timeout_demo : True := by\n  trivial\n",
+    )
+    original_new_session = LeanProbe._new_session
+
+    class _TimeoutOnTarget:
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
+
+        def __getattr__(self, name):
+            return getattr(self._wrapped, name)
+
+        def run(self, request, timeout=None):
+            if "timeout_demo" in getattr(request, "cmd", ""):
+                raise TimeoutError("timed out")
+            return self._wrapped.run(request, timeout=timeout)
+
+    def _new_session(self, project_root, file_path, repl_dir):
+        session, error = original_new_session(self, project_root, file_path, repl_dir)
+        if session is not None:
+            session.server = _TimeoutOnTarget(session.server)
+        return session, error
+
+    monkeypatch.setattr(LeanProbe, "_new_session", _new_session)
+    probe = LeanProbe()
+
+    payload = probe.check_target(target, theorem_id="timeout_demo", cwd=project)
+
+    assert payload["success"] is False
+    assert payload["timed_out"] is True
+    assert payload["error_code"] == "timeout"
+
+
 def test_proof_state_and_tactic_step(monkeypatch, tmp_path):
     _install_fake_lean_interact(monkeypatch)
     project, _target = _write_project(tmp_path, "theorem demo : True := by\n  trivial\n")
@@ -250,6 +418,18 @@ def test_proof_state_and_tactic_step(monkeypatch, tmp_path):
     assert state["sorries"][0]["proof_state"] == 5
     assert step["ok"] is True
     assert step["proof_status"] == "Completed"
+
+
+def test_proof_state_without_sorry_is_not_ok(monkeypatch, tmp_path):
+    _install_fake_lean_interact(monkeypatch)
+    project, _target = _write_project(tmp_path, "theorem demo : True := by\n  trivial\n")
+    probe = LeanProbe()
+
+    state = probe.proof_state_from_code("theorem ex : True := by trivial", cwd=project)
+
+    assert state["success"] is True
+    assert state["ok"] is False
+    assert state["sorries"] == []
 
 
 def test_check_target_restarts_dead_lean_server_once(monkeypatch, tmp_path):

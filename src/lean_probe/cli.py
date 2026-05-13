@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .benchmark import (
     _external_command_specs,
     run_file_level_benchmark,
@@ -32,6 +34,13 @@ def _emit(payload: dict[str, Any], *, pretty: bool) -> None:
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 
+def _package_version() -> str:
+    try:
+        return version("lean-probe")
+    except PackageNotFoundError:
+        return __version__
+
+
 def _probe_from_args(args: argparse.Namespace) -> LeanProbe:
     return LeanProbe(
         auto_build=bool(getattr(args, "auto_build", False)),
@@ -43,7 +52,7 @@ def _probe_from_args(args: argparse.Namespace) -> LeanProbe:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lean-probe", description="Fast Lean 4 proof feedback for agents.")
-    parser.add_argument("--version", action="version", version="lean-probe 0.1.0")
+    parser.add_argument("--version", action="version", version=f"lean-probe {_package_version()}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     common_parent = argparse.ArgumentParser(add_help=False)

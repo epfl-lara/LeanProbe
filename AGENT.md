@@ -50,6 +50,11 @@ Most LeanProbe tools return JSON-compatible dictionaries with these fields:
 - `elapsed_s`: wall-clock seconds measured by LeanProbe for this call.
 - `error`: infrastructure or backend error text. Inspect this first when
   `success=false`.
+- `error_code`: stable machine-readable failure code, such as
+  `no_project_root`, `file_not_found`, `target_not_found`,
+  `lean_interact_unavailable`, `header_failed`, `prior_decl_failed`,
+  `dead_server`, or `timeout`.
+- `timed_out`: true when LeanProbe classified the backend failure as a timeout.
 - `messages`: Lean diagnostics. Each message includes `severity`, `message`,
   chunk-local `start`/`end`, and file-adjusted `file_start`/`file_end` when a
   file target is checked.
@@ -63,8 +68,8 @@ For `check` and `feedback`, these additional fields matter:
 - `has_errors`: whether Lean reported hard errors.
 - `has_sorry`: whether the checked chunk used `sorry`.
 - `target`: matched declaration name.
-- `target_kind`: declaration kind, such as `theorem`, `lemma`, `def`, or
-  `example`.
+- `target_kind`: declaration kind, such as `theorem`, `lemma`, `def`,
+  `instance`, or `example`.
 - `target_range`: source-file line range for the target declaration.
 - `tactics`: tactic text, ranges, goals, proof-state ids, and used constants.
 - `feedback_lean`: checked Lean declaration with inline feedback comments.
@@ -72,7 +77,8 @@ For `check` and `feedback`, these additional fields matter:
 Interpretation rules:
 
 - If `success=false`, fix the tool/project problem before interpreting Lean
-  diagnostics.
+  diagnostics. Use `error_code` for routing and `error` for human-readable
+  detail.
 - If `success=true` and `ok=false`, LeanProbe ran successfully and Lean rejected
   the checked code or found `sorry`.
 - Warnings do not make `ok=false` unless they are accompanied by hard errors or
@@ -267,8 +273,7 @@ for tactic metadata. Prefer `check` for ordinary candidate loops and call
 
 ## `lean_probe_state`
 
-Purpose: create or inspect proof states from standalone Lean code containing
-`sorry`.
+Purpose: create proof states from standalone Lean code containing `sorry`.
 
 Inputs:
 
@@ -312,6 +317,10 @@ is complete.
 
 The `session_id` is held in memory by the running MCP server. If the server
 restarts, create a new state session.
+
+MCP server configuration can be supplied through environment variables:
+`LEAN_PROBE_LAKE_PATH`, `LEAN_PROBE_LOCAL_REPL_PATH`,
+`LEAN_PROBE_AUTO_BUILD`, and `LEAN_PROBE_VERBOSE`.
 
 ## `lean_probe_step`
 
