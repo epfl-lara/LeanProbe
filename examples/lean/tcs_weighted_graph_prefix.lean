@@ -1,5 +1,6 @@
--- Source: https://github.com/epfl-lara/icml-26-lean-challenges, minimum_spanning_tree/Challenges/Minimum_Spanning_Tree/Def_WeightedGraph.lean
--- Prefix extract through Sym2order/ordering setup; later declarations in the upstream file target Lean 4.28 and do not compile unchanged on Lean 4.30.
+-- Benchmark source: CodaBench TCS Proving competition, https://www.codabench.org/competitions/16161/
+-- Extracted from the public companion repository https://github.com/epfl-lara/icml-26-lean-challenges, minimum_spanning_tree/Challenges/Minimum_Spanning_Tree/Def_WeightedGraph.lean
+-- Prefix extract through Sym2order/ordering setup; later upstream declarations target Lean 4.28 and do not compile unchanged on Lean 4.30.
 -- Included as a longer, complete benchmark example.
 /-
 Copyright (c) 2025 Sorrachai Yingchareonthawornchai· All rights reserved.

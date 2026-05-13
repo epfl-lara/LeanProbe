@@ -1,4 +1,5 @@
--- Source: https://github.com/epfl-lara/icml-26-lean-challenges, treap/Challenges/Treap/Def_Analysis.lean
+-- Benchmark source: CodaBench TCS Proving competition, https://www.codabench.org/competitions/16161/
+-- Extracted from the public companion repository https://github.com/epfl-lara/icml-26-lean-challenges, treap/Challenges/Treap/Def_Analysis.lean
 -- Included as a longer, complete benchmark example.
 /-
 Copyright (c) 2025 Sorrachai Yingchareonthawornchai. All rights reserved.

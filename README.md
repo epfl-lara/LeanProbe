@@ -168,12 +168,14 @@ diagnostics do not explain the failure, call `lean_probe_feedback` and inspect
 
 LeanProbe ships standalone Mathlib benchmark examples under `examples/lean/`.
 The compact files are hand-written smoke and micro-benchmark cases. The
-`icml26_*` files are longer extracts from
-[epfl-lara/icml-26-lean-challenges](https://github.com/epfl-lara/icml-26-lean-challenges)
-with source headers retained; they are included to exercise more realistic
-algorithm and graph-development code without depending on that repository at
-runtime. Run all examples from any existing Mathlib Lake project by passing that
-project as `--cwd`.
+`tcs_*` files are longer extracts from the
+[CodaBench TCS Proving competition](https://www.codabench.org/competitions/16161/).
+The concrete Lean source was taken from the public companion repository
+[epfl-lara/icml-26-lean-challenges](https://github.com/epfl-lara/icml-26-lean-challenges),
+with source headers retained. These files exercise more realistic algorithm and
+graph-development code without adding a runtime dependency on either source.
+Run all examples from any existing Mathlib Lake project by passing that project
+as `--cwd`.
 
 | File | Targets |
 | --- | --- |
@@ -181,9 +183,9 @@ project as `--cwd`.
 | `examples/lean/algebra_order.lean` | `sq_add_sq_nonneg`, `two_mul_le_sq_add_sq`, `sq_sub_sq_factor`, `cube_add_expansion`, `square_le_self_on_unit_interval` |
 | `examples/lean/sets_functions.lean` | `preimage_inter_eq`, `preimage_subset_preimage`, `image_subset_of_mapsTo`, `injective_from_left_inverse`, `surjective_from_right_inverse` |
 | `examples/lean/number_theory_nat.lean` | `nat_add_cancel_bench`, `nat_mul_pos_bench`, `nat_mod_lt_bench`, `nat_square_eq_mul`, `nat_dvd_trans_bench` |
-| `examples/lean/icml26_binary_heap.lean` | selected binary heap definitions such as `heapify`, `extract_min`, `insert`, `merge`, and `remove` |
-| `examples/lean/icml26_treap_analysis.lean` | `uniform_prob_sum_one`, `perm_prob_sum_one` |
-| `examples/lean/icml26_weighted_graph_prefix.lean` | selected weighted graph helpers and definitions through `Sym2order` |
+| `examples/lean/tcs_binary_heap.lean` | selected binary heap definitions such as `heapify`, `extract_min`, `insert`, `merge`, and `remove` |
+| `examples/lean/tcs_treap_analysis.lean` | `uniform_prob_sum_one`, `perm_prob_sum_one` |
+| `examples/lean/tcs_weighted_graph_prefix.lean` | selected weighted graph helpers and definitions through `Sym2order` |
 
 The suite file `examples/benchmark_cases.json` lists all 40 targets with labels,
 groups, sizes, and descriptions. Raw benchmark JSON is written to
@@ -315,6 +317,74 @@ The first analysis row includes the coldest LeanInteract server setup observed
 in this run. Its prepare time is therefore much higher, and it needs four check
 attempts to break even. The row is kept to make cold-start effects visible.
 
+### TCS Challenge Repeated Target Checks
+
+Run policy: same as the compact repeated-target tables above. These rows cover
+the 20 longer examples derived from the CodaBench TCS Proving source material.
+Raw JSON was written under `benchmark_results/tcs-local-2026-05-13/` and
+`benchmark_results/tcs-linux-2026-05-13/`.
+
+Grouped summary:
+
+| Platform | Example group | Targets | Full-file Lake avg | LeanProbe prepare avg | Cached check avg | Cached feedback avg | Fresh LeanProbe avg | Fresh / cached |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| macOS | `tcs_binary_heap` | 9 | 2.576s | 2.931s | 0.049s | 0.042s | 2.589s | 155.9x |
+| macOS | `tcs_treap_analysis` | 2 | 2.082s | 2.219s | 0.034s | 0.034s | 2.181s | 77.8x |
+| macOS | `tcs_weighted_graph` | 9 | 2.617s | 2.461s | 0.031s | 0.028s | 2.603s | 194.9x |
+| Linux | `tcs_binary_heap` | 9 | 1.886s | 1.807s | 0.054s | 0.051s | 1.877s | 103.2x |
+| Linux | `tcs_treap_analysis` | 2 | 1.495s | 1.441s | 0.036s | 0.040s | 1.560s | 53.1x |
+| Linux | `tcs_weighted_graph` | 9 | 1.771s | 1.683s | 0.032s | 0.034s | 1.761s | 127.5x |
+
+macOS per-target detail:
+
+| Case label | File | Full-file Lake | Prepare env | Cached check | Cached feedback | Fresh check | Break-even checks | Speedup at 3 checks | Speedup at 10 checks |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `tcs_heap_is_min_heap` | `tcs_binary_heap.lean` | 2.669s | 6.597s | 0.026s | 0.012s | 2.326s | 3 | 1.20x | 3.89x |
+| `tcs_heap_heapify` | `tcs_binary_heap.lean` | 2.499s | 2.260s | 0.179s | 0.151s | 2.569s | 1 | 2.68x | 6.17x |
+| `tcs_heap_get_last` | `tcs_binary_heap.lean` | 2.484s | 2.405s | 0.015s | 0.012s | 2.452s | 1 | 3.04x | 9.72x |
+| `tcs_heap_extract_min` | `tcs_binary_heap.lean` | 2.762s | 2.395s | 0.012s | 0.008s | 2.556s | 1 | 3.41x | 10.98x |
+| `tcs_heap_heap_min` | `tcs_binary_heap.lean` | 2.485s | 2.415s | 0.016s | 0.015s | 2.520s | 1 | 3.03x | 9.65x |
+| `tcs_heap_insert` | `tcs_binary_heap.lean` | 2.520s | 2.448s | 0.009s | 0.008s | 2.540s | 1 | 3.05x | 9.93x |
+| `tcs_heap_merge` | `tcs_binary_heap.lean` | 2.535s | 2.491s | 0.160s | 0.151s | 2.659s | 2 | 2.56x | 6.20x |
+| `tcs_heap_remove` | `tcs_binary_heap.lean` | 2.589s | 2.631s | 0.009s | 0.007s | 2.863s | 2 | 2.92x | 9.51x |
+| `tcs_heap_size` | `tcs_binary_heap.lean` | 2.643s | 2.740s | 0.019s | 0.014s | 2.819s | 2 | 2.83x | 9.02x |
+| `tcs_treap_uniform_prob` | `tcs_treap_analysis.lean` | 2.104s | 2.313s | 0.020s | 0.026s | 2.183s | 2 | 2.66x | 8.37x |
+| `tcs_treap_perm_prob` | `tcs_treap_analysis.lean` | 2.059s | 2.125s | 0.047s | 0.042s | 2.179s | 2 | 2.73x | 7.93x |
+| `tcs_wgraph_subset_list` | `tcs_weighted_graph_prefix.lean` | 2.736s | 2.644s | 0.011s | 0.009s | 2.303s | 1 | 3.07x | 9.93x |
+| `tcs_wgraph_memconsrw` | `tcs_weighted_graph_prefix.lean` | 2.454s | 2.227s | 0.032s | 0.017s | 2.371s | 1 | 3.17x | 9.63x |
+| `tcs_wgraph_subset_comb` | `tcs_weighted_graph_prefix.lean` | 2.598s | 2.303s | 0.040s | 0.033s | 3.143s | 1 | 3.22x | 9.61x |
+| `tcs_wgraph_empty` | `tcs_weighted_graph_prefix.lean` | 2.634s | 2.454s | 0.009s | 0.008s | 2.490s | 1 | 3.19x | 10.35x |
+| `tcs_wgraph_subgraph` | `tcs_weighted_graph_prefix.lean` | 2.830s | 2.433s | 0.007s | 0.005s | 2.489s | 1 | 3.46x | 11.31x |
+| `tcs_wgraph_from_edge_subset_subgraph` | `tcs_weighted_graph_prefix.lean` | 2.577s | 2.437s | 0.011s | 0.010s | 2.504s | 1 | 3.13x | 10.12x |
+| `tcs_wgraph_from_edge_subset` | `tcs_weighted_graph_prefix.lean` | 2.568s | 2.459s | 0.146s | 0.148s | 2.772s | 2 | 2.66x | 6.55x |
+| `tcs_wgraph_mst` | `tcs_weighted_graph_prefix.lean` | 2.555s | 2.540s | 0.008s | 0.006s | 2.677s | 1 | 2.99x | 9.75x |
+| `tcs_wgraph_sym2order` | `tcs_weighted_graph_prefix.lean` | 2.599s | 2.651s | 0.015s | 0.016s | 2.680s | 2 | 2.89x | 9.28x |
+
+Linux per-target detail:
+
+| Case label | File | Full-file Lake | Prepare env | Cached check | Cached feedback | Fresh check | Break-even checks | Speedup at 3 checks | Speedup at 10 checks |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `tcs_heap_is_min_heap` | `tcs_binary_heap.lean` | 1.883s | 1.650s | 0.016s | 0.013s | 1.645s | 1 | 3.33x | 10.40x |
+| `tcs_heap_heapify` | `tcs_binary_heap.lean` | 1.887s | 1.530s | 0.197s | 0.176s | 1.774s | 1 | 2.67x | 5.39x |
+| `tcs_heap_get_last` | `tcs_binary_heap.lean` | 1.899s | 1.803s | 0.017s | 0.019s | 1.780s | 1 | 3.07x | 9.62x |
+| `tcs_heap_extract_min` | `tcs_binary_heap.lean` | 1.946s | 1.789s | 0.015s | 0.013s | 1.786s | 1 | 3.18x | 10.04x |
+| `tcs_heap_heap_min` | `tcs_binary_heap.lean` | 1.891s | 1.772s | 0.024s | 0.019s | 1.819s | 1 | 3.08x | 9.40x |
+| `tcs_heap_insert` | `tcs_binary_heap.lean` | 1.821s | 1.824s | 0.010s | 0.009s | 1.845s | 2 | 2.95x | 9.46x |
+| `tcs_heap_merge` | `tcs_binary_heap.lean` | 1.907s | 1.862s | 0.177s | 0.180s | 2.034s | 2 | 2.39x | 5.25x |
+| `tcs_heap_remove` | `tcs_binary_heap.lean` | 1.929s | 1.984s | 0.009s | 0.008s | 2.101s | 2 | 2.88x | 9.30x |
+| `tcs_heap_size` | `tcs_binary_heap.lean` | 1.810s | 2.051s | 0.024s | 0.019s | 2.108s | 2 | 2.56x | 7.90x |
+| `tcs_treap_uniform_prob` | `tcs_treap_analysis.lean` | 1.517s | 1.433s | 0.020s | 0.029s | 1.518s | 1 | 3.05x | 9.29x |
+| `tcs_treap_perm_prob` | `tcs_treap_analysis.lean` | 1.474s | 1.449s | 0.053s | 0.050s | 1.602s | 2 | 2.75x | 7.45x |
+| `tcs_wgraph_subset_list` | `tcs_weighted_graph_prefix.lean` | 1.800s | 1.643s | 0.014s | 0.015s | 1.593s | 1 | 3.20x | 10.10x |
+| `tcs_wgraph_memconsrw` | `tcs_weighted_graph_prefix.lean` | 1.822s | 1.547s | 0.026s | 0.026s | 1.628s | 1 | 3.36x | 10.08x |
+| `tcs_wgraph_subset_comb` | `tcs_weighted_graph_prefix.lean` | 1.764s | 1.598s | 0.041s | 0.039s | 1.708s | 1 | 3.07x | 8.78x |
+| `tcs_wgraph_empty` | `tcs_weighted_graph_prefix.lean` | 1.817s | 1.640s | 0.008s | 0.009s | 1.796s | 1 | 3.28x | 10.56x |
+| `tcs_wgraph_subgraph` | `tcs_weighted_graph_prefix.lean` | 1.707s | 1.764s | 0.009s | 0.013s | 1.710s | 2 | 2.86x | 9.21x |
+| `tcs_wgraph_from_edge_subset_subgraph` | `tcs_weighted_graph_prefix.lean` | 1.771s | 1.665s | 0.011s | 0.012s | 1.719s | 1 | 3.13x | 9.98x |
+| `tcs_wgraph_from_edge_subset` | `tcs_weighted_graph_prefix.lean` | 1.740s | 1.687s | 0.152s | 0.171s | 1.900s | 2 | 2.44x | 5.43x |
+| `tcs_wgraph_mst` | `tcs_weighted_graph_prefix.lean` | 1.733s | 1.801s | 0.008s | 0.007s | 1.855s | 2 | 2.85x | 9.21x |
+| `tcs_wgraph_sym2order` | `tcs_weighted_graph_prefix.lean` | 1.783s | 1.805s | 0.017s | 0.016s | 1.936s | 2 | 2.88x | 9.03x |
+
 ### Sequential Same-File Checks
 
 Run policy: 1 measured run per file, sequential execution, 5 declarations per
@@ -371,9 +441,9 @@ lake env lean /path/to/LeanProbe/examples/lean/analysis_real.lean
 lake env lean /path/to/LeanProbe/examples/lean/algebra_order.lean
 lake env lean /path/to/LeanProbe/examples/lean/sets_functions.lean
 lake env lean /path/to/LeanProbe/examples/lean/number_theory_nat.lean
-lake env lean /path/to/LeanProbe/examples/lean/icml26_binary_heap.lean
-lake env lean /path/to/LeanProbe/examples/lean/icml26_treap_analysis.lean
-lake env lean /path/to/LeanProbe/examples/lean/icml26_weighted_graph_prefix.lean
+lake env lean /path/to/LeanProbe/examples/lean/tcs_binary_heap.lean
+lake env lean /path/to/LeanProbe/examples/lean/tcs_treap_analysis.lean
+lake env lean /path/to/LeanProbe/examples/lean/tcs_weighted_graph_prefix.lean
 ```
 
 Run the target suite:
@@ -428,8 +498,9 @@ Additional validation performed for the May 13, 2026 numbers:
 - every positive example file used for the May 13 benchmark tables passed
   `lake env lean`;
 - all 20 compact repeated target benchmark cases returned `success=true`;
-- the longer `icml26_*` example files pass `lake env lean`, and all 20 expanded
-  ICML-derived benchmark cases returned `success=true` in a one-run smoke suite;
+- the longer `tcs_*` example files pass `lake env lean`, and all 20 CodaBench
+  TCS benchmark cases returned `success=true` with feedback and fresh-server
+  baselines on both macOS and `larapc2`;
 - all 4 sequential same-file benchmark files reported successful partial-sorry
   and full-without-sorry scenarios for Lake and LeanProbe;
 - the same Python tests and benchmark suite passed on `larapc2`;

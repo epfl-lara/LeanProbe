@@ -249,12 +249,12 @@ def test_example_benchmark_cases_point_to_existing_targets():
         assert case.theorem_id in names, case.label
 
 
-def test_icml26_examples_are_longer_complete_sources():
+def test_tcs_examples_are_longer_complete_sources():
     repo_root = Path(__file__).resolve().parents[1]
     expected_min_lines = {
-        "icml26_binary_heap.lean": 150,
-        "icml26_treap_analysis.lean": 60,
-        "icml26_weighted_graph_prefix.lean": 180,
+        "tcs_binary_heap.lean": 150,
+        "tcs_treap_analysis.lean": 60,
+        "tcs_weighted_graph_prefix.lean": 180,
     }
 
     for filename, min_lines in expected_min_lines.items():
