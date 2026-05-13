@@ -15,8 +15,9 @@ acceptance.
 ## MCP Tools
 
 LeanProbe exposes the MCP server name `lean-probe` and the tools
-`lean_probe_prepare`, `lean_probe_check`, `lean_probe_feedback`,
-`lean_probe_state`, `lean_probe_step`, and `lean_probe_close_state`.
+`lean_probe_capabilities`, `lean_probe_prepare`, `lean_probe_check`,
+`lean_probe_feedback`, `lean_probe_state`, `lean_probe_step`, and
+`lean_probe_close_state`.
 
 For MCP parameter details, result-field semantics, and `feedback_lean` examples,
 see [AGENT.md](AGENT.md).
@@ -58,6 +59,21 @@ The benchmark suite measures two cases:
   repeatedly check replacements for that declaration;
 - sequential same-file checks: prepare a header once, then advance declaration by
   declaration with env reuse.
+
+## How It Differs From LSP MCP Tools
+
+LeanProbe and LSP-backed Lean MCP servers are complementary. Tools such as
+`lean-lsp-mcp` are broad project-navigation and interaction layers over
+`lake serve`: they are the better fit for file-position diagnostics, goals,
+hover information, references, completions, code actions, widgets, and theorem
+search integrations.
+
+LeanProbe is narrower: it screens complete declaration replacements against a
+cached LeanInteract environment, exposes proof-state stepping for standalone
+snippets, and benchmarks declaration-level agent loops against `lake env lean`.
+Use it when an agent is trying many candidate declarations or moving through a
+file in source order. Use an LSP MCP beside it when the agent needs editor-like
+semantic context around the file.
 
 ## Install
 
@@ -107,7 +123,7 @@ Check the Python package and CLI:
 
 ```bash
 python -c "import lean_probe, lean_interact; print('ok')"
-lean-probe --version  # lean-probe 0.2.0
+lean-probe --version  # lean-probe 0.2.2
 ```
 
 Check that Lean/Lake are visible:
@@ -147,6 +163,8 @@ repository with `python -m pytest -q`.
 
 ```bash
 lean-probe prepare /path/to/File.lean --cwd /path/to/lake-project --theorem-id my_theorem
+
+lean-probe capabilities --cwd /path/to/lake-project --pretty
 
 lean-probe check /path/to/File.lean my_theorem \
   --cwd /path/to/lake-project \
@@ -255,7 +273,8 @@ the Lean project from a terminal before using LeanProbe. Some Lean/Lake build
 commands print progress to stdout; stdout is reserved for MCP JSON-RPC frames,
 so build output can corrupt the transport.
 
-Use `lean_probe_prepare` before repeated checks in the same file, then call
+Use `lean_probe_capabilities` when setup is uncertain. Use
+`lean_probe_prepare` before repeated checks in the same file, then call
 `lean_probe_check` for concrete target declarations or replacements. When
 ordinary diagnostics are not enough, call `lean_probe_feedback` and inspect
 `messages`, `tactics`, and `feedback_lean`. See [AGENT.md](AGENT.md) for the

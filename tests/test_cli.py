@@ -101,6 +101,21 @@ def test_cli_check_outputs_json(monkeypatch, tmp_path, capsys):
     assert output["target"] == "demo"
 
 
+def test_cli_capabilities_outputs_readiness(monkeypatch, tmp_path, capsys):
+    _install_fake_lean_interact(monkeypatch)
+    project = tmp_path / "Demo"
+    project.mkdir()
+    (project / "lakefile.lean").write_text("import Lake\n", encoding="utf-8")
+
+    code = cli.main(["capabilities", "--cwd", str(project)])
+    output = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert output["available"] is True
+    assert output["project_root"] == str(project)
+    assert output["degraded_codes"] == []
+
+
 def test_cli_prepare_and_feedback_pretty(monkeypatch, tmp_path, capsys):
     _install_fake_lean_interact(monkeypatch)
     project = tmp_path / "Demo"

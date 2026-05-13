@@ -25,6 +25,7 @@ def ParamField(*, description: str) -> Any:
 
 MCP_SERVER_NAME = "lean-probe"
 TOOL_NAMES = [
+    "lean_probe_capabilities",
     "lean_probe_prepare",
     "lean_probe_check",
     "lean_probe_feedback",
@@ -104,6 +105,19 @@ def create_server(probe: LeanProbe | None = None) -> Any:
 
     active_probe = probe or _probe_from_env()
     mcp = FastMCP(MCP_SERVER_NAME)
+
+    @mcp.tool()
+    def lean_probe_capabilities(
+        cwd: Cwd = "",
+    ) -> dict[str, Any]:
+        """Report LeanProbe readiness, selected project root/REPL, and live sessions.
+
+        Use this first when setup is uncertain. `available=false` means the
+        response includes `degraded_codes` and `degraded_reasons` describing
+        missing LeanInteract support, project-root detection, or REPL setup.
+        """
+
+        return active_probe.capabilities(cwd=cwd or None)
 
     @mcp.tool()
     def lean_probe_prepare(

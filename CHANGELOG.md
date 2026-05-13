@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2 - 2026-05-13
+
+- Added `lean_probe_capabilities` and `lean-probe capabilities` to expose
+  readiness, project-root detection, selected REPL path, and live session state.
+- Documented how LeanProbe complements LSP-backed Lean MCP tools such as
+  `lean-lsp-mcp`.
+
 ## 0.2.1 - 2026-05-13
 
 - Documented that stdio MCP clients should keep `LEAN_PROBE_AUTO_BUILD=0` and

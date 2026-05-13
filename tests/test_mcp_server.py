@@ -9,6 +9,9 @@ class _FakeProbe:
     def __init__(self):
         self.closed = False
 
+    def capabilities(self, *args, **kwargs):
+        return {"action": "capabilities", "args": args, "kwargs": kwargs}
+
     def prepare_file(self, *args, **kwargs):
         return {"action": "prepare", "args": args, "kwargs": kwargs}
 
@@ -34,6 +37,7 @@ class _FakeProbe:
 def test_mcp_public_names_are_stable():
     assert MCP_SERVER_NAME == "lean-probe"
     assert TOOL_NAMES == [
+        "lean_probe_capabilities",
         "lean_probe_prepare",
         "lean_probe_check",
         "lean_probe_feedback",
@@ -52,6 +56,8 @@ def test_mcp_tool_descriptions_expose_agent_contracts():
     server = create_server(probe=_FakeProbe())
     tools = server._tool_manager._tools
 
+    assert "readiness" in tools["lean_probe_capabilities"].description
+    assert "degraded_codes" in tools["lean_probe_capabilities"].description
     assert "cached only inside this running MCP server process" in tools["lean_probe_prepare"].description
     assert "complete declaration chunk" in tools["lean_probe_check"].description
     assert "success=false" in tools["lean_probe_check"].description
@@ -72,6 +78,7 @@ def test_mcp_tool_wrappers_call_injected_probe():
     server = create_server(probe=_FakeProbe())
     tools = server._tool_manager._tools
 
+    capabilities = tools["lean_probe_capabilities"].fn(cwd="/tmp/project")
     check = tools["lean_probe_check"].fn(
         file_path="Demo.lean",
         theorem_id="demo",
@@ -83,6 +90,8 @@ def test_mcp_tool_wrappers_call_injected_probe():
     step = tools["lean_probe_step"].fn(session_id="session", proof_state=3, tactic="rfl", timeout_s=5)
     close = tools["lean_probe_close_state"].fn(session_id="session")
 
+    assert capabilities["action"] == "capabilities"
+    assert capabilities["kwargs"]["cwd"] == "/tmp/project"
     assert check["action"] == "check"
     assert check["kwargs"]["cwd"] == "/tmp/project"
     assert check["kwargs"]["include_tactics"] is True

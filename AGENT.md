@@ -39,12 +39,41 @@ that value is invalid.
 
 | Tool | Use When | Main Result |
 |---|---|---|
+| `lean_probe_capabilities` | Setup is uncertain, or the agent needs to know the active project, REPL path, and live sessions. | Readiness/degraded state for this server process. |
 | `lean_probe_prepare` | Starting repeated checks in one Lean file, or moving to a later target in the same file. | A cached Lean environment before the target. |
 | `lean_probe_check` | Testing the current declaration or a candidate full replacement declaration. | Fast pass/fail plus Lean messages and optional tactic metadata. |
 | `lean_probe_feedback` | A check failed, or the agent needs proof states, tactic ranges, and annotated Lean context. | Same status fields as check, with tactics and `feedback_lean`. |
 | `lean_probe_state` | Exploring a proof state from standalone Lean code containing `sorry`. | A session id and one proof-state id per `sorry`. |
 | `lean_probe_step` | Trying one tactic against a proof state returned by `lean_probe_state` or a previous step. | New goals/proof state, or `ok=true` if the proof is completed. |
 | `lean_probe_close_state` | Finished with a proof-state session. | Closes the session and releases its LeanInteract process. |
+
+## `lean_probe_capabilities`
+
+Purpose: report whether LeanProbe is ready to run in the current environment.
+
+Inputs:
+
+- `cwd` (optional): Lean project root or a directory inside it. Leave empty to
+  detect from the MCP server process's current working directory.
+
+Typical result:
+
+```json
+{
+  "available": true,
+  "project_root": "/path/to/mathlib-project",
+  "repl_dir": "/path/to/mathlib-project/.lake/packages/repl",
+  "active_sessions": [],
+  "code_sessions": [],
+  "max_code_sessions": 16,
+  "degraded_reasons": [],
+  "degraded_codes": []
+}
+```
+
+Use this when a project does not check as expected, when a client launched the
+server from an unexpected directory, or before a long proof loop in a fresh MCP
+session. `available=false` is a setup signal, not a Lean proof result.
 
 ## Shared Result Fields
 
@@ -429,14 +458,15 @@ Use this when tactic exploration for that proof state is finished.
 
 ### Repeated Candidate Checks For One Declaration
 
-1. Call `lean_probe_prepare` with `file_path`, `cwd`, and `theorem_id`.
-2. For each candidate, call `lean_probe_check` with a complete replacement
+1. If setup is uncertain, call `lean_probe_capabilities` with `cwd`.
+2. Call `lean_probe_prepare` with `file_path`, `cwd`, and `theorem_id`.
+3. For each candidate, call `lean_probe_check` with a complete replacement
    declaration.
-3. If `ok=false`, inspect `output` and `messages`.
-4. If the next edit is not clear from the diagnostics, call
+4. If `ok=false`, inspect `output` and `messages`.
+5. If the next edit is not clear from the diagnostics, call
    `lean_probe_feedback` and pass `feedback_lean` plus structured
    `messages`/`tactics` into the next attempt.
-5. After accepting and writing a candidate to disk, run a whole-file or
+6. After accepting and writing a candidate to disk, run a whole-file or
    whole-project command when that larger scope matters.
 
 ### Sequential Same-File Work
@@ -474,4 +504,6 @@ Treat success=false as a tool/project problem. Treat success=true, ok=false as a
 Lean result and inspect messages/output. Call lean_probe_feedback when proof
 states or annotated feedback_lean would help the next edit. For final file or
 project scope, run lake env lean, lake build, or CI after writing accepted code.
+Call lean_probe_capabilities first when cwd, LeanInteract availability, or REPL
+selection is unclear.
 ```

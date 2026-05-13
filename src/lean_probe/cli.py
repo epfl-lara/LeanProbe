@@ -64,6 +64,8 @@ def build_parser() -> argparse.ArgumentParser:
     common_parent.add_argument("--verbose", action="store_true", help="Enable LeanInteract verbose setup")
     common_parent.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
 
+    sub.add_parser("capabilities", parents=[common_parent], help="Report LeanProbe readiness and live sessions")
+
     prepare = sub.add_parser("prepare", parents=[common_parent], help="Warm imports and optional prior declarations")
     prepare.add_argument("file_path")
     prepare.add_argument("--theorem-id", default="")
@@ -249,7 +251,9 @@ def main(argv: list[str] | None = None) -> int:
 
     probe = _probe_from_args(args)
     try:
-        if args.command == "prepare":
+        if args.command == "capabilities":
+            payload = probe.capabilities(cwd=args.cwd or None)
+        elif args.command == "prepare":
             payload = probe.prepare_file(
                 args.file_path,
                 theorem_id=args.theorem_id,
@@ -305,6 +309,8 @@ def main(argv: list[str] | None = None) -> int:
         probe.close()
 
     _emit(payload, pretty=bool(getattr(args, "pretty", False)))
+    if args.command == "capabilities":
+        return 0 if payload.get("available") else 1
     return 0 if payload.get("success") else 1
 
 
