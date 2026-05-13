@@ -36,11 +36,21 @@ env before target + checked declaration -> diagnostics/proof states
 env before target + next checked declaration -> diagnostics/proof states
 ```
 
-For sequential same-file checks, the pattern is:
+For sequential same-file checks, "environment" means Lean's elaborated state
+after processing some prefix of the file. It is not just the import/header
+state. The state grows only when a declaration is accepted:
 
 ```text
-header/import env -> next declaration chunk -> next env -> next declaration chunk
+imports/header -> env0
+env0 + declaration t1 -> env1   # env1 contains imports/header and t1
+env1 + declaration t2 -> env2   # env2 contains imports/header, t1, and t2
+env2 + declaration t3 -> env3
 ```
+
+If a tool is trying several replacements for `t2`, each attempt should reuse
+`env1`; failed attempts do not advance the environment. Once the complete `t2`
+is accepted, LeanProbe can use `env2` for later declarations instead of
+rechecking imports, `t1`, and `t2` from scratch.
 
 The benchmark suite measures two cases:
 
@@ -322,8 +332,10 @@ partial scenario:
    `sorry` detected;
 2. the complete version, which must be accepted without `sorry`.
 
-LeanProbe advances the cached environment only after the complete version
-succeeds. The Lake baselines rerun terminal checks for each scenario:
+LeanProbe advances from `env before this declaration` to `env after this
+declaration` only after the complete version succeeds. A partial or failing
+scenario is reported, but it is not added to the cached state used for later
+declarations. The Lake baselines rerun terminal checks for each scenario:
 
 - `Lake growing-prefix total`: `lake env lean` on a temp file containing the
   header, already accepted prior declarations, and the current scenario.
