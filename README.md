@@ -61,10 +61,11 @@ The benchmark suite measures two cases:
 
 ## Install
 
-LeanProbe is a Python package that talks to Lean through LeanInteract. It does
-not install Lean, Lake, or Mathlib for you. The Python environment running
-LeanProbe must be able to import `lean_interact`, and `lake` must be available
-on `PATH` or passed with `--lake-path`.
+LeanProbe is a Python package that talks to Lean through LeanInteract. `pip`
+installs LeanProbe's Python dependencies, including `lean-interact`. It does
+not install Lean, Lake, or Mathlib; those belong to the Lean toolchain and the
+Lake project being checked. `lake` must be available on `PATH` or passed with
+`--lake-path`.
 
 Required:
 
@@ -81,6 +82,10 @@ Install the CLI and Python package:
 ```bash
 python -m pip install lean-probe
 ```
+
+That command installs the required Python runtime dependencies. If
+`python -c "import lean_probe, lean_interact"` fails, run the install command in
+the same Python environment that will launch LeanProbe.
 
 Install MCP support when you want to run the MCP server:
 
