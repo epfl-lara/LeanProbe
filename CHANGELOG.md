@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Documented that stdio MCP clients should keep `LEAN_PROBE_AUTO_BUILD=0` and
+  build Lean projects before starting LeanProbe, because build output on stdout
+  can corrupt MCP transport framing.
+
 ## 0.2.0 - 2026-05-13
 
 - Expanded declaration segmentation for modifiers, attributes, additional Lean

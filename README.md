@@ -243,12 +243,17 @@ Example MCP configuration with LeanProbe environment variables:
       "args": ["mcp"],
       "env": {
         "LEAN_PROBE_LAKE_PATH": "/opt/homebrew/bin/lake",
-        "LEAN_PROBE_AUTO_BUILD": "1"
+        "LEAN_PROBE_AUTO_BUILD": "0"
       }
     }
   }
 }
 ```
+
+For stdio MCP clients such as Codex, keep `LEAN_PROBE_AUTO_BUILD=0` and build
+the Lean project from a terminal before using LeanProbe. Some Lean/Lake build
+commands print progress to stdout; stdout is reserved for MCP JSON-RPC frames,
+so build output can corrupt the transport.
 
 Use `lean_probe_prepare` before repeated checks in the same file, then call
 `lean_probe_check` for concrete target declarations or replacements. When
