@@ -69,6 +69,61 @@ def test_partial_declaration_replaces_body_with_sorry():
     assert partial == "theorem demo (n : Nat) : n = n := by\n  sorry\n"
 
 
+def test_partial_declaration_requires_by_body():
+    assert benchmark._partial_declaration("structure Box where\n  value : Nat\n") is None
+    assert benchmark._partial_declaration("def value : Nat := 1\n") is None
+
+
+def test_file_level_scenarios_skip_partial_for_non_by_declarations():
+    _header, segments = benchmark.segment_file(
+        "\n".join(
+            [
+                "structure Box where",
+                "  value : Nat",
+                "",
+                "def answer : Nat := 42",
+                "",
+                "theorem demo : True := by",
+                "  trivial",
+                "",
+            ]
+        )
+    )
+
+    scenarios = benchmark._file_level_scenarios(segments)
+
+    assert [(scenario["name"], scenario["variant"]) for scenario in scenarios] == [
+        ("Box", "full"),
+        ("answer", "full"),
+        ("demo", "partial"),
+        ("demo", "full"),
+    ]
+
+
+def test_file_level_scenarios_skip_nameless_mutual_target():
+    _header, segments = benchmark.segment_file(
+        "\n".join(
+            [
+                "mutual",
+                "  def a : Nat := 0",
+                "  def b : Nat := 1",
+                "end",
+                "",
+                "theorem demo : True := by",
+                "  trivial",
+                "",
+            ]
+        )
+    )
+
+    scenarios = benchmark._file_level_scenarios(segments)
+
+    assert [(scenario["kind"], scenario["name"], scenario["variant"]) for scenario in scenarios] == [
+        ("theorem", "demo", "partial"),
+        ("theorem", "demo", "full"),
+    ]
+
+
 def test_full_scenario_file_replaces_only_current_declaration(tmp_path):
     lean_file = tmp_path / "Demo.lean"
     lean_file.write_text(
@@ -139,7 +194,7 @@ def test_hard_error_detection_ignores_warnings():
 
 
 def test_last_json_object_skips_logs_after_json():
-    payload = benchmark._last_json_object("startup log\n{\"ok\": true}\ncleanup log")
+    payload = benchmark._last_json_object('startup log\n{"ok": true}\ncleanup log')
 
     assert payload == {"ok": True}
 
@@ -169,7 +224,7 @@ def test_external_command_allows_json_braces(tmp_path):
     target.write_text("theorem candidate : True := by\n  trivial\n", encoding="utf-8")
 
     ok, _elapsed, output = benchmark._run_external_command(
-        "python -c 'import json; print(json.dumps({\"success\": True, \"file\": \"{file}\"}))'",
+        'python -c \'import json; print(json.dumps({"success": True, "file": "{file}"}))\'',
         project_root=tmp_path,
         original_file=original,
         lake_target=target,

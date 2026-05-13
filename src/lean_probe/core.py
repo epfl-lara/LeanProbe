@@ -42,23 +42,26 @@ DECLARATION_MODIFIERS = (
     "scoped",
     "local",
 )
-LEAN_IDENTIFIER_PATTERN = r"(?!--)[^\s:({\[]+"
+LEAN_IDENTIFIER_ATOM_PATTERN = r"(?:«[^»\n]+»|[^\W\d][\w']*)"
+LEAN_IDENTIFIER_PATTERN = rf"{LEAN_IDENTIFIER_ATOM_PATTERN}(?:\.{LEAN_IDENTIFIER_ATOM_PATTERN})*"
+LEAN_UNIVERSE_PATTERN = r"(?:\.\{[^}\n]*\})?"
+LEAN_NAME_LOOKAHEAD = r"(?=[\s:({\[]|$)"
 DECLARATION_PATTERN = re.compile(
     r"^[ \t]*"
     r"(?:(?:@\[[^\]]*\][ \t]*(?:\n[ \t]*)?)|"
     rf"(?:(?:{'|'.join(DECLARATION_MODIFIERS)})\b[ \t]+))*"
     rf"(?P<kind>{'|'.join(DECLARATION_KINDS)})\b"
-    rf"(?:\s+(?P<name>{LEAN_IDENTIFIER_PATTERN}))?",
+    rf"(?:\s+(?P<name>{LEAN_IDENTIFIER_PATTERN}){LEAN_UNIVERSE_PATTERN}{LEAN_NAME_LOOKAHEAD})?",
     re.MULTILINE,
 )
+MUTUAL_PATTERN = re.compile(r"^[ \t]*mutual\b", re.MULTILINE)
+MUTUAL_END_PATTERN = re.compile(r"^[ \t]*end\b", re.MULTILINE)
 LOCAL_REPL_CANDIDATES = (
     ".lake/packages/repl",
     ".lake/build",
 )
 PROJECT_MARKERS = ("lakefile.lean", "lakefile.toml")
-NOISY_MESSAGE_PREFIXES = (
-    "note: this linter can be disabled with",
-)
+NOISY_MESSAGE_PREFIXES = ("note: this linter can be disabled with",)
 DEFAULT_MESSAGE_LIMIT = 12
 DEFAULT_TACTIC_LIMIT = 20
 DEFAULT_SORRY_LIMIT = 20
@@ -67,6 +70,13 @@ FEEDBACK_ENTRIES_PER_LINE = 4
 FEEDBACK_MESSAGE_CHARS = 240
 FEEDBACK_GOALS_CHARS = 300
 DEFAULT_MAX_CODE_SESSIONS = 16
+
+
+@dataclass(frozen=True)
+class _SegmentStart:
+    declaration_start: int
+    kind: str
+    name: str
 
 
 @dataclass(frozen=True)
@@ -206,6 +216,42 @@ def _lean_code_mask(text: str) -> list[bool]:
     return mask
 
 
+def _line_indent_at(text: str, line_start: int) -> int:
+    line_end = text.find("\n", line_start)
+    if line_end < 0:
+        line_end = len(text)
+    line = text[line_start:line_end]
+    return len(line) - len(line.lstrip(" \t"))
+
+
+def _position_in_spans(pos: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start < pos < end for start, end in spans)
+
+
+def _mutual_block_spans(text: str, code_mask: list[bool]) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for match in MUTUAL_PATTERN.finditer(text):
+        start = match.start()
+        if not code_mask[start] or _position_in_spans(start, spans):
+            continue
+        opener_indent = _line_indent_at(text, start)
+        end = len(text)
+        first_next_line = text.find("\n", match.end())
+        scan = first_next_line + 1 if first_next_line >= 0 else len(text)
+        while scan < len(text):
+            if code_mask[scan] and MUTUAL_END_PATTERN.match(text, scan):
+                if _line_indent_at(text, scan) <= opener_indent:
+                    line_end = text.find("\n", scan)
+                    end = len(text) if line_end < 0 else line_end + 1
+                    break
+            next_line = text.find("\n", scan)
+            if next_line < 0:
+                break
+            scan = next_line + 1
+        spans.append((start, end))
+    return spans
+
+
 def _import_lean_interact() -> tuple[Any, Any, Any, Any, Any, str]:
     try:
         from lean_interact import Command, LeanREPLConfig, LeanServer, LocalProject, ProofStep
@@ -255,27 +301,36 @@ def segment_file(text: str) -> tuple[str, list[LeanIncrementalSegment]]:
     """Split a Lean file into a header and top-level declaration chunks."""
 
     code_mask = _lean_code_mask(text)
-    matches = [match for match in DECLARATION_PATTERN.finditer(text) if code_mask[match.start()]]
-    if not matches:
+    mutual_spans = _mutual_block_spans(text, code_mask)
+    starts = [_SegmentStart(declaration_start=start, kind="mutual", name="") for start, _end in mutual_spans]
+    starts.extend(
+        _SegmentStart(
+            declaration_start=match.start(),
+            kind=str(match.group("kind") or ""),
+            name=str(match.group("name") or "").strip(),
+        )
+        for match in DECLARATION_PATTERN.finditer(text)
+        if code_mask[match.start()] and not _position_in_spans(match.start(), mutual_spans)
+    )
+    starts.sort(key=lambda item: item.declaration_start)
+    if not starts:
         return text, []
 
-    boundaries = [_doc_boundary_start(text, match.start()) for match in matches]
+    boundaries = [_doc_boundary_start(text, marker.declaration_start) for marker in starts]
     header = text[: boundaries[0]].rstrip() + "\n"
     segments: list[LeanIncrementalSegment] = []
-    for index, match in enumerate(matches):
+    for index, marker in enumerate(starts):
         start = boundaries[index]
         end = boundaries[index + 1] if index + 1 < len(boundaries) else len(text)
         chunk = text[start:end].rstrip() + "\n"
-        kind = str(match.group("kind") or "")
-        name = str(match.group("name") or "").strip()
         segments.append(
             LeanIncrementalSegment(
                 index=index,
-                kind=kind,
-                name=name,
+                kind=marker.kind,
+                name=marker.name,
                 start=start,
                 end=end,
-                declaration_start=match.start(),
+                declaration_start=marker.declaration_start,
                 start_line=_line_number(text, start),
                 end_line=_line_number(text, max(start, end - 1)),
                 text=chunk,
@@ -313,7 +368,9 @@ def _clean_message_text(text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def _message_payloads(response: Any, *, line_offset: int = 0, limit: int = DEFAULT_MESSAGE_LIMIT) -> list[dict[str, Any]]:
+def _message_payloads(
+    response: Any, *, line_offset: int = 0, limit: int = DEFAULT_MESSAGE_LIMIT
+) -> list[dict[str, Any]]:
     payloads = []
     for message in list(getattr(response, "messages", []) or [])[:limit]:
         text = _clean_message_text(str(getattr(message, "data", "") or ""))
@@ -393,7 +450,9 @@ def _has_sorry(response: Any) -> bool:
     return False
 
 
-def _feedback_lean(text: str, messages: list[dict[str, Any]], tactics: list[dict[str, Any]], *, limit: int = FEEDBACK_TACTIC_LIMIT) -> str:
+def _feedback_lean(
+    text: str, messages: list[dict[str, Any]], tactics: list[dict[str, Any]], *, limit: int = FEEDBACK_TACTIC_LIMIT
+) -> str:
     by_line: dict[int, list[str]] = {}
     for message in messages:
         pos = message.get("start") if isinstance(message.get("start"), Mapping) else None
@@ -406,7 +465,9 @@ def _feedback_lean(text: str, messages: list[dict[str, Any]], tactics: list[dict
         line = int(pos.get("line", 1) if isinstance(pos, Mapping) else 1)
         goals = str(tactic.get("goals", "") or "").strip()
         if goals:
-            by_line.setdefault(max(1, line), []).append("-- proof state: " + goals.replace("\n", " ")[:FEEDBACK_GOALS_CHARS])
+            by_line.setdefault(max(1, line), []).append(
+                "-- proof state: " + goals.replace("\n", " ")[:FEEDBACK_GOALS_CHARS]
+            )
 
     output: list[str] = []
     for line_number, source_line in enumerate(text.splitlines(), start=1):
@@ -438,7 +499,9 @@ def _response_payload(
     line_offset = (int(target.start_line) - 1) if target is not None else 0
     messages = _message_payloads(response, line_offset=line_offset) if response is not None else []
     tactics = _tactic_payloads(response, line_offset=line_offset) if response is not None and include_tactics else []
-    has_errors = bool(response.has_errors()) if response is not None and hasattr(response, "has_errors") else bool(error)
+    has_errors = (
+        bool(response.has_errors()) if response is not None and hasattr(response, "has_errors") else bool(error)
+    )
     has_sorry = _has_sorry(response) if response is not None else False
     valid_without_sorry = (
         bool(response.lean_code_is_valid(allow_sorry=False))
@@ -685,7 +748,11 @@ class LeanProbe:
             )
             messages = _message_payloads(response) if response is not None else []
             sorries = _sorry_payloads(response) if response is not None else []
-            has_errors = bool(response.has_errors()) if response is not None and hasattr(response, "has_errors") else bool(run_error)
+            has_errors = (
+                bool(response.has_errors())
+                if response is not None and hasattr(response, "has_errors")
+                else bool(run_error)
+            )
             return {
                 "success": not bool(run_error),
                 "ok": not has_errors and bool(sorries),
@@ -967,7 +1034,13 @@ class LeanProbe:
                 restarted_server, restart_error = retry()
                 if restarted_server is None:
                     final_error = restart_error or error
-                    return None, elapsed, final_error, _error_code_for_message(final_error), _timeout_error_text(final_error)
+                    return (
+                        None,
+                        elapsed,
+                        final_error,
+                        _error_code_for_message(final_error),
+                        _timeout_error_text(final_error),
+                    )
                 response, retry_elapsed, retry_error, retry_error_code, retry_timed_out = self._run_command(
                     restarted_server,
                     cmd,
@@ -981,7 +1054,9 @@ class LeanProbe:
             return None, time.perf_counter() - start, error, error_code, timed_out
         return response, time.perf_counter() - start, "", "", False
 
-    def _ensure_header(self, session: _IncrementalSession, header: str, *, timeout_s: int) -> tuple[bool, str, float, str, bool]:
+    def _ensure_header(
+        self, session: _IncrementalSession, header: str, *, timeout_s: int
+    ) -> tuple[bool, str, float, str, bool]:
         header_hash = _sha(header)
         if session.header_hash == header_hash and session.header_env is not None:
             return True, "", 0.0, "", False
@@ -1042,7 +1117,11 @@ class LeanProbe:
             if error:
                 return None, error, total_elapsed, cache_hit, error_code, timed_out
             if response is None or bool(response.has_errors()):
-                messages = _message_payloads(response, line_offset=segment.start_line - 1, limit=4) if response is not None else []
+                messages = (
+                    _message_payloads(response, line_offset=segment.start_line - 1, limit=4)
+                    if response is not None
+                    else []
+                )
                 summary = _format_message_summary(messages)
                 detail = f": {summary}" if summary else ""
                 return (
@@ -1054,7 +1133,9 @@ class LeanProbe:
                     False,
                 )
             after_env = getattr(response, "env", None)
-            session.checkpoints[segment.index] = _Checkpoint(before_env=env, after_env=after_env, text_hash=segment.text_hash)
+            session.checkpoints[segment.index] = _Checkpoint(
+                before_env=env, after_env=after_env, text_hash=segment.text_hash
+            )
             session.segment_names[segment.index] = segment.name
             env = after_env
         return env, "", total_elapsed, cache_hit, "", False
@@ -1230,13 +1311,15 @@ class LeanProbe:
                 else False
             )
             if has_errors or not valid_without_sorry or _has_sorry(response):
-                tactic_response, tactic_elapsed, tactic_error, _tactic_error_code, _tactic_timed_out = self._run_command(
-                    session.server,
-                    checked_text,
-                    env=env_before,
-                    include_tactics=True,
-                    timeout_s=timeout_s,
-                    retry=lambda: self._restart_incremental_server(session),
+                tactic_response, tactic_elapsed, tactic_error, _tactic_error_code, _tactic_timed_out = (
+                    self._run_command(
+                        session.server,
+                        checked_text,
+                        env=env_before,
+                        include_tactics=True,
+                        timeout_s=timeout_s,
+                        retry=lambda: self._restart_incremental_server(session),
+                    )
                 )
                 check_elapsed += tactic_elapsed
                 if tactic_response is not None and not tactic_error:

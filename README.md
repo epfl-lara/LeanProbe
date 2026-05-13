@@ -123,8 +123,8 @@ Set `LEAN_PROBE_LAKE_PATH`, `LEAN_PROBE_LOCAL_REPL_PATH`,
 `LEAN_PROBE_AUTO_BUILD`, or `LEAN_PROBE_VERBOSE` to configure the MCP server
 without CLI flags.
 
-Run the package tests from the repository with
-`PYTHONPATH=src python -m pytest -q`.
+After an editable development install, run the package tests from the
+repository with `python -m pytest -q`.
 
 ## CLI
 
@@ -321,7 +321,9 @@ Question measured: "If an agent works through several declarations in the same
 file, can the checker reuse the file-local environment instead of starting over
 for each scenario?"
 
-For each declaration in the file, the benchmark checks two scenarios:
+For each targetable declaration in the file, the benchmark checks the complete
+declaration. When the declaration has a `:= by` proof body, it also checks a
+partial scenario:
 
 1. a partial version containing `sorry`, which should be accepted by Lean with
    `sorry` detected;
@@ -420,8 +422,8 @@ Run policy: 1 measured run per file, sequential execution, 5 declarations per
 file. This benchmark models a file-level checking session:
 
 1. check imports/header;
-2. for each declaration, check a partial `sorry` version and confirm `sorry` is
-   detected without hard errors;
+2. for each targetable declaration with a `:= by` proof body, check a partial
+   `sorry` version and confirm `sorry` is detected without hard errors;
 3. check the full declaration and require valid-without-sorry;
 4. advance the cached environment only after the full declaration succeeds.
 
@@ -479,7 +481,7 @@ lake env lean /path/to/LeanProbe/examples/lean/tcs_weighted_graph_prefix.lean
 Run the target suite:
 
 ```bash
-PYTHONPATH=src python -m lean_probe.cli benchmark-suite \
+lean-probe benchmark-suite \
   --cases-file examples/benchmark_cases.json \
   --cwd /path/to/mathlib-lake-project \
   --runs 1 --warmups 0 --include-feedback --include-no-cache \
@@ -492,7 +494,7 @@ prefix checks, terminal Lake full-file checks, cached LeanProbe checks, and
 no-cache LeanProbe checks:
 
 ```bash
-PYTHONPATH=src python -m lean_probe.cli benchmark-file \
+lean-probe benchmark-file \
   examples/lean/analysis_real.lean \
   --cwd /path/to/mathlib-lake-project \
   --runs 1 \
@@ -504,7 +506,7 @@ To compare another verifier, pass it as a shell command. `{file}` is the temp
 full candidate file for the current partial/full scenario:
 
 ```bash
-PYTHONPATH=src python -m lean_probe.cli benchmark-file \
+lean-probe benchmark-file \
   examples/lean/analysis_real.lean \
   --cwd /path/to/mathlib-lake-project \
   --runs 1 \
@@ -520,13 +522,13 @@ failure, and prints a final JSON line with `success`, `ok`, `has_errors`, and
 Run Python tests:
 
 ```bash
-PYTHONPATH=src python -m pytest -q
+python -m pytest -q
 ```
 
 Run the optional real LeanInteract smoke test:
 
 ```bash
-LEAN_PROBE_RUN_INTEGRATION=1 PYTHONPATH=src python -m pytest tests/test_integration.py -q
+LEAN_PROBE_RUN_INTEGRATION=1 python -m pytest tests/test_integration.py -q
 ```
 
 Additional validation performed for the May 13, 2026 numbers:
@@ -566,6 +568,10 @@ Current `error_code` values include `no_project_root`, `file_not_found`,
 See [AGENT.md](AGENT.md) for the complete MCP output contract, including
 `success` versus `ok`, proof-state stepping, and how agents should consume
 `feedback_lean`.
+
+Declarations inside `mutual ... end` blocks are included as prior context for
+later targets, but the individual declarations inside the mutual block are not
+separate LeanProbe targets.
 
 ## Backend Dependency
 

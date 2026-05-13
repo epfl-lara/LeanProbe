@@ -17,9 +17,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Build distributions
+      - name: Build and check distributions
         run: |
-          python -m pip install -U pip build
+          python -m pip install -U pip build twine
           python -m build
+          python -m twine check dist/*
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

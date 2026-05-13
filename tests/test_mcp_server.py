@@ -1,10 +1,14 @@
 import re
 from pathlib import Path
 
-from lean_probe.mcp_server import MCP_SERVER_NAME, TOOL_NAMES, _probe_from_env, create_server
+from lean_probe import mcp_server
+from lean_probe.mcp_server import MCP_SERVER_NAME, TOOL_NAMES, _env_bool, _probe_from_env, create_server
 
 
 class _FakeProbe:
+    def __init__(self):
+        self.closed = False
+
     def prepare_file(self, *args, **kwargs):
         return {"action": "prepare", "args": args, "kwargs": kwargs}
 
@@ -22,6 +26,9 @@ class _FakeProbe:
 
     def close_state(self, *args, **kwargs):
         return {"action": "close_state", "args": args, "kwargs": kwargs}
+
+    def close(self):
+        self.closed = True
 
 
 def test_mcp_public_names_are_stable():
@@ -95,6 +102,28 @@ def test_mcp_probe_reads_environment(monkeypatch):
     assert probe.local_repl_path == Path("/tmp/repl").resolve()
     assert str(probe.lake_path) == "/opt/lake"
     assert probe.verbose is True
+
+
+def test_env_bool_false_values(monkeypatch):
+    for value in ["", "0", "false", "FALSE", "no", "off"]:
+        monkeypatch.setenv("LEAN_PROBE_FLAG", value)
+        assert _env_bool("LEAN_PROBE_FLAG") is False
+    monkeypatch.delenv("LEAN_PROBE_FLAG")
+    assert _env_bool("LEAN_PROBE_FLAG") is False
+
+
+def test_shutdown_handler_registration_is_repeatable(monkeypatch):
+    registered = []
+    signals = []
+    monkeypatch.setattr(mcp_server.atexit, "register", lambda fn: registered.append(fn))
+    monkeypatch.setattr(mcp_server.signal, "signal", lambda sig, handler: signals.append((sig, handler)))
+    probe = _FakeProbe()
+
+    mcp_server._install_shutdown_handlers(probe)
+    mcp_server._install_shutdown_handlers(probe)
+
+    assert registered == [probe.close, probe.close]
+    assert len(signals) == 4
 
 
 def test_agent_tool_table_matches_public_mcp_names():

@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import atexit
+import importlib
 import os
 import signal
 from typing import Annotated, Any
 
-try:
-    from pydantic import Field
-except Exception:
-    def Field(*, description: str) -> None:  # type: ignore[no-redef]
-        return None
-
 from .core import LeanProbe
+
+_pydantic: Any
+try:
+    _pydantic = importlib.import_module("pydantic")
+except Exception:
+    _pydantic = None
+
+
+def ParamField(*, description: str) -> Any:
+    if _pydantic is None:
+        return None
+    return _pydantic.Field(description=description)
+
 
 MCP_SERVER_NAME = "lean-probe"
 TOOL_NAMES = [
@@ -27,43 +35,51 @@ TOOL_NAMES = [
 
 FilePath = Annotated[
     str,
-    Field(description="Lean source file path, absolute or relative to cwd/project root."),
+    ParamField(description="Lean source file path, absolute or relative to cwd/project root."),
 ]
 TheoremId = Annotated[
     str,
-    Field(description="Target declaration name. Qualified and unqualified names are accepted when they match the file."),
+    ParamField(
+        description="Target declaration name. Qualified and unqualified names are accepted when they match the file."
+    ),
 ]
 Cwd = Annotated[
     str,
-    Field(description="Lean/Lake project root, or a directory inside it. Leave empty to auto-detect from file_path/current working directory."),
+    ParamField(
+        description="Lean/Lake project root, or a directory inside it. Leave empty to auto-detect from file_path/current working directory."
+    ),
 ]
 Replacement = Annotated[
     str,
-    Field(description="Complete replacement declaration chunk: signature plus proof/body. Leave empty to check the current target text."),
+    ParamField(
+        description="Complete replacement declaration chunk: signature plus proof/body. Leave empty to check the current target text."
+    ),
 ]
 TimeoutS = Annotated[
     int,
-    Field(description="LeanInteract request timeout in seconds."),
+    ParamField(description="LeanInteract request timeout in seconds."),
 ]
 IncludeTactics = Annotated[
     bool,
-    Field(description="When true, collect tactic ranges, goals, proof states, and used constants."),
+    ParamField(description="When true, collect tactic ranges, goals, proof states, and used constants."),
 ]
 LeanCode = Annotated[
     str,
-    Field(description="Standalone Lean code containing one or more sorry terms from which proof states should be created."),
+    ParamField(
+        description="Standalone Lean code containing one or more sorry terms from which proof states should be created."
+    ),
 ]
 SessionId = Annotated[
     str,
-    Field(description="LeanProbe proof session id returned by lean_probe_state."),
+    ParamField(description="LeanProbe proof session id returned by lean_probe_state."),
 ]
 ProofStateId = Annotated[
     int,
-    Field(description="Proof-state id returned by lean_probe_state or a previous lean_probe_step call."),
+    ParamField(description="Proof-state id returned by lean_probe_state or a previous lean_probe_step call."),
 ]
 TacticText = Annotated[
     str,
-    Field(description="One Lean tactic to apply to the given proof state, for example rfl, omega, or exact h."),
+    ParamField(description="One Lean tactic to apply to the given proof state, for example rfl, omega, or exact h."),
 ]
 
 

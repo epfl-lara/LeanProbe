@@ -25,6 +25,7 @@ from typing import Any
 from .core import LeanProbe, find_lean_project_root, segment_file
 
 AMORTIZED_ATTEMPTS = (1, 3, 10)
+PARTIAL_SCENARIO_KINDS = {"theorem", "lemma", "example", "def", "instance"}
 
 
 @dataclass(frozen=True)
@@ -84,8 +85,12 @@ def _run_text_command(
         return proc.returncode == 0, elapsed, output
     except subprocess.TimeoutExpired as exc:
         elapsed = time.perf_counter() - start
-        stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-        stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        stdout = (
+            exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+        )
+        stderr = (
+            exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        )
         output = (stdout + "\n" + stderr).strip()
         detail = f"timed out after {timeout_s}s"
         return False, elapsed, (output + "\n" + detail).strip()
@@ -245,12 +250,10 @@ def _target_replacement(file_path: Path, theorem_id: str) -> tuple[str, str]:
     return target.text, ""
 
 
-def _partial_declaration(text: str) -> str:
+def _partial_declaration(text: str) -> str | None:
     match = re.search(r":=\s*by\b", text)
     if match is None:
-        match = re.search(r":=", text)
-    if match is None:
-        return text
+        return None
     return text[: match.start()] + ":= by\n  sorry\n"
 
 
@@ -570,7 +573,9 @@ def run_benchmark(
                 if not no_cache.get("success"):
                     failures.append({"kind": "lean_probe_no_cache_check", "output": str(no_cache.get("error", ""))})
                 elif not no_cache.get("ok"):
-                    failures.append({"kind": "lean_probe_no_cache_check", "output": str(no_cache.get("output", ""))[:1000]})
+                    failures.append(
+                        {"kind": "lean_probe_no_cache_check", "output": str(no_cache.get("output", ""))[:1000]}
+                    )
     finally:
         if probe is not None:
             probe.close()
@@ -1013,14 +1018,17 @@ def run_queue_cutoff_benchmark(
 def _file_level_scenarios(segments: list[Any]) -> list[dict[str, Any]]:
     scenarios: list[dict[str, Any]] = []
     for segment in segments:
-        if segment.kind in {"theorem", "lemma", "example"}:
+        if not segment.name:
+            continue
+        partial_text = _partial_declaration(segment.text) if segment.kind in PARTIAL_SCENARIO_KINDS else None
+        if partial_text is not None:
             scenarios.append(
                 {
                     "index": segment.index,
                     "name": segment.name,
                     "kind": segment.kind,
                     "variant": "partial",
-                    "text": _partial_declaration(segment.text),
+                    "text": partial_text,
                     "start_line": segment.start_line,
                     "end_line": segment.end_line,
                 }
@@ -1050,11 +1058,10 @@ def _run_lake_file_scenarios(
     lake_path: str | Path,
 ) -> tuple[bool, float, list[dict[str, Any]]]:
     total_elapsed = 0.0
-    prior_segments: list[Any] = []
-    segment_by_index = {segment.index: segment for segment in segments}
     details: list[dict[str, Any]] = []
     success = True
     for scenario in scenarios:
+        prior_segments = [segment for segment in segments if segment.index < int(scenario["index"])]
         tmp_path = _lake_prefix_scenario_file(file_path, header, prior_segments, str(scenario["text"]))
         try:
             ok, elapsed, output = _run_lake_check(project_root, tmp_path, timeout_s, lake_path=lake_path)
@@ -1079,8 +1086,6 @@ def _run_lake_file_scenarios(
                 "output": output[-1000:],
             }
         )
-        if scenario["variant"] == "full" and status["valid_without_sorry"]:
-            prior_segments.append(segment_by_index[int(scenario["index"])])
     return success, total_elapsed, details
 
 
@@ -1323,7 +1328,9 @@ def run_file_level_benchmark(
             external_totals[name].append(external_elapsed)
             last_details[f"external_command:{name}"] = external_details
             if not external_ok:
-                failures.append({"kind": f"external_command:{name}", "output": "one or more external-command scenarios failed"})
+                failures.append(
+                    {"kind": f"external_command:{name}", "output": "one or more external-command scenarios failed"}
+                )
 
         cached_ok, cached_elapsed, cached_details = _run_probe_file_scenarios(
             file_path=resolved,

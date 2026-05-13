@@ -24,6 +24,10 @@ Lean accepted that chunk without hard errors and without `sorry`. The scope is
 the supplied chunk plus the prepared environment. Use `lake env lean File.lean`,
 `lake build`, or CI when you need a whole-file or whole-project gate.
 
+Lean declarations inside a `mutual ... end` block are not individually
+targetable. LeanProbe keeps the whole mutual block as one prior-context chunk
+when checking later targets, because Lean elaborates that block as a unit.
+
 ## Tool Selection
 
 | Tool | Use When | Main Result |
@@ -47,14 +51,16 @@ Most LeanProbe tools return JSON-compatible dictionaries with these fields:
   hard errors and without `sorry`.
 - `backend`: always `lean_interact`.
 - `tool`: always `lean_probe`.
-- `action`: `prepare`, `check`, `feedback`, `state`, or `step`.
+- `action`: `prepare`, `check`, `feedback`, `state`, `step`, or
+  `close_state`.
 - `elapsed_s`: wall-clock seconds measured by LeanProbe for this call.
 - `error`: infrastructure or backend error text. Inspect this first when
   `success=false`.
 - `error_code`: stable machine-readable failure code, such as
   `no_project_root`, `file_not_found`, `target_not_found`,
-  `lean_interact_unavailable`, `header_failed`, `prior_decl_failed`,
-  `dead_server`, `session_dead`, `unknown_session`, or `timeout`.
+  `lean_interact_unavailable`, `lean_interact_start_failed`, `header_failed`,
+  `prior_decl_failed`, `dead_server`, `session_dead`, `unknown_session`,
+  `timeout`, or `backend_error`.
 - `timed_out`: true when LeanProbe classified the backend failure as a timeout.
 - `messages`: Lean diagnostics. Each message includes `severity`, `message`,
   chunk-local `start`/`end`, and file-adjusted `file_start`/`file_end` when a

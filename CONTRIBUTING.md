@@ -15,14 +15,14 @@ opt-in.
 ## Checks
 
 ```bash
-PYTHONPATH=src python -m pytest -q
+python -m pytest -q
 python -m build
 ```
 
 Run the optional real LeanInteract smoke test with:
 
 ```bash
-LEAN_PROBE_RUN_INTEGRATION=1 PYTHONPATH=src python -m pytest tests/test_integration.py -q
+LEAN_PROBE_RUN_INTEGRATION=1 python -m pytest tests/test_integration.py -q
 ```
 
 ## Development Notes

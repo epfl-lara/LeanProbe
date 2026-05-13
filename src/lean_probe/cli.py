@@ -86,7 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
     state.add_argument("--code-file", default="")
     state.add_argument("--include-tactics", action="store_true")
 
-    tactic_script = sub.add_parser("tactic-script", parents=[common_parent], help="Run tactics against a code snippet with sorry")
+    tactic_script = sub.add_parser(
+        "tactic-script", parents=[common_parent], help="Run tactics against a code snippet with sorry"
+    )
     tactic_script.add_argument("--code", default="")
     tactic_script.add_argument("--code-file", default="")
     tactic_script.add_argument("--tactic", action="append", default=[], help="Tactic to apply in order")
@@ -99,7 +101,9 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--runs", type=int, default=5)
     benchmark.add_argument("--warmups", type=int, default=1)
     benchmark.add_argument("--include-feedback", action="store_true")
-    benchmark.add_argument("--include-no-cache", action="store_true", help="Time fresh-server LeanProbe checks with no cache reuse")
+    benchmark.add_argument(
+        "--include-no-cache", action="store_true", help="Time fresh-server LeanProbe checks with no cache reuse"
+    )
     benchmark.add_argument(
         "--external-command",
         action="append",
@@ -114,7 +118,9 @@ def build_parser() -> argparse.ArgumentParser:
     suite.add_argument("--runs", type=int, default=5)
     suite.add_argument("--warmups", type=int, default=1)
     suite.add_argument("--include-feedback", action="store_true")
-    suite.add_argument("--include-no-cache", action="store_true", help="Time fresh-server LeanProbe checks with no cache reuse")
+    suite.add_argument(
+        "--include-no-cache", action="store_true", help="Time fresh-server LeanProbe checks with no cache reuse"
+    )
     suite.add_argument(
         "--external-command",
         action="append",

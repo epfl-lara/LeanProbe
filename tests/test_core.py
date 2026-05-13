@@ -71,6 +71,7 @@ def _install_fake_lean_interact(monkeypatch):
         def __init__(self, config):
             self.config = config
             self.runs = []
+            self.killed = False
             servers.append(self)
 
         def run(self, request, timeout=None):
@@ -107,7 +108,7 @@ def _install_fake_lean_interact(monkeypatch):
             return _Response(env=100 + len(self.runs), tactics=tactics)
 
         def kill(self):
-            pass
+            self.killed = True
 
     class _Config:
         def __init__(self, **kwargs):
@@ -154,7 +155,7 @@ def test_segment_file_ignores_keywords_inside_comments_and_strings():
                 "",
                 "/-- theorem fake : True := by trivial -/",
                 "theorem real : True := by",
-                "  have s := \"def also_fake := 1\"",
+                '  have s := "def also_fake := 1"',
                 "  trivial",
                 "",
                 "/-",
@@ -232,6 +233,71 @@ def test_segment_file_recognizes_modifiers_compound_attributes_and_more_kinds():
     assert segments[0].text.startswith("@[simp, reducible]\nprivate theorem")
 
 
+def test_segment_file_strips_universe_params_from_names():
+    _header, segments = segment_file(
+        "\n".join(
+            [
+                "theorem foo.{u} (α : Sort u) : True := by",
+                "  trivial",
+                "",
+                "instance inst.{u, v} : Inhabited (Sort u) := ⟨PUnit⟩",
+                "",
+            ]
+        )
+    )
+
+    assert [(segment.kind, segment.name) for segment in segments] == [
+        ("theorem", "foo"),
+        ("instance", "inst"),
+    ]
+    assert core._find_segment(segments, "foo").name == "foo"
+    assert core._find_segment(segments, "inst").name == "inst"
+
+
+def test_segment_file_does_not_capture_invalid_identifier_characters():
+    _header, segments = segment_file("theorem foo*bar : True := by\n  trivial\n")
+
+    assert segments[0].kind == "theorem"
+    assert segments[0].name == ""
+    assert core._find_segment(segments, "foo*bar") is None
+
+
+def test_segment_file_keeps_mutual_block_as_one_context_chunk():
+    text = "\n".join(
+        [
+            "import Mathlib",
+            "",
+            "theorem before : True := by",
+            "  trivial",
+            "",
+            "mutual",
+            "  def evenly : Nat → Bool",
+            "    | 0 => true",
+            "    | n + 1 => oddly n",
+            "",
+            "  def oddly : Nat → Bool",
+            "    | 0 => false",
+            "    | n + 1 => evenly n",
+            "end",
+            "",
+            "theorem after : True := by",
+            "  trivial",
+            "",
+        ]
+    )
+
+    _header, segments = segment_file(text)
+
+    assert [(segment.kind, segment.name) for segment in segments] == [
+        ("theorem", "before"),
+        ("mutual", ""),
+        ("theorem", "after"),
+    ]
+    assert "mutual" not in segments[0].text
+    assert "def evenly" in segments[1].text
+    assert "def oddly" in segments[1].text
+
+
 def test_find_segment_matches_qualified_and_short_names():
     _header, segments = segment_file("namespace N\n\ntheorem demo : True := by\n  trivial\n\nend N\n")
 
@@ -288,11 +354,15 @@ def test_error_code_for_message_is_stable(message, code):
 
 
 def test_error_code_startup_failure_takes_precedence_over_dead_server_text():
-    assert core._error_code_for_message("failed to start LeanInteract server: broken pipe") == "lean_interact_start_failed"
+    assert (
+        core._error_code_for_message("failed to start LeanInteract server: broken pipe") == "lean_interact_start_failed"
+    )
 
 
 def test_capabilities_reports_degraded_codes(monkeypatch, tmp_path):
-    monkeypatch.setattr(core, "_import_lean_interact", lambda: (None, None, None, None, None, "lean-interact unavailable: missing"))
+    monkeypatch.setattr(
+        core, "_import_lean_interact", lambda: (None, None, None, None, None, "lean-interact unavailable: missing")
+    )
     monkeypatch.setattr(LeanProbe, "_resolve_project_root", lambda self, cwd, file_path=None: None)
     probe = LeanProbe()
 
@@ -514,21 +584,23 @@ def test_proof_state_and_tactic_step(monkeypatch, tmp_path):
 
 
 def test_close_state_releases_session(monkeypatch, tmp_path):
-    _install_fake_lean_interact(monkeypatch)
+    servers = _install_fake_lean_interact(monkeypatch)
     project, _target = _write_project(tmp_path, "theorem demo : True := by\n  trivial\n")
     probe = LeanProbe()
 
     state = probe.proof_state_from_code("theorem ex (n : Nat) : n = n := by sorry", cwd=project)
+    state_server = servers[-1]
     closed = probe.close_state(state["session_id"])
     second_close = probe.close_state(state["session_id"])
 
     assert closed["ok"] is True
+    assert state_server.killed is True
     assert second_close["success"] is False
     assert second_close["error_code"] == "unknown_session"
 
 
 def test_code_sessions_are_lru_bounded(monkeypatch, tmp_path):
-    _install_fake_lean_interact(monkeypatch)
+    servers = _install_fake_lean_interact(monkeypatch)
     project, _target = _write_project(tmp_path, "theorem demo : True := by\n  trivial\n")
     probe = LeanProbe(max_code_sessions=2)
 
@@ -538,6 +610,7 @@ def test_code_sessions_are_lru_bounded(monkeypatch, tmp_path):
 
     assert list(probe._code_sessions.keys()) == [second["session_id"], third["session_id"]]
     assert first["session_id"] not in probe._code_sessions
+    assert servers[0].killed is True
 
 
 def test_tactic_step_dead_server_marks_session_dead(monkeypatch, tmp_path):

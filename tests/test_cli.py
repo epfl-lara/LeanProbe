@@ -116,7 +116,7 @@ def test_cli_prepare_and_feedback_pretty(monkeypatch, tmp_path, capsys):
     feedback_text = capsys.readouterr().out
 
     assert prepare_code == 0
-    assert "\n  \"action\": \"prepare\"" in prepare_text
+    assert '\n  "action": "prepare"' in prepare_text
     assert feedback_code == 0
     feedback = json.loads(feedback_text)
     assert feedback["action"] == "feedback"
@@ -192,4 +192,4 @@ def test_cli_version_uses_package_version(capsys):
     except SystemExit as exc:
         assert exc.code == 0
 
-    assert capsys.readouterr().out.startswith("lean-probe ")
+    assert capsys.readouterr().out.startswith("lean-probe 0.1.0")
