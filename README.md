@@ -167,9 +167,13 @@ diagnostics do not explain the failure, call `lean_probe_feedback` and inspect
 ## Benchmark Files
 
 LeanProbe ships standalone Mathlib benchmark examples under `examples/lean/`.
-They are not copied from, imported from, or coupled to any external agent
-project. Run them from any existing Mathlib Lake project by passing that project
-as `--cwd`.
+The compact files are hand-written smoke and micro-benchmark cases. The
+`icml26_*` files are longer extracts from
+[epfl-lara/icml-26-lean-challenges](https://github.com/epfl-lara/icml-26-lean-challenges)
+with source headers retained; they are included to exercise more realistic
+algorithm and graph-development code without depending on that repository at
+runtime. Run all examples from any existing Mathlib Lake project by passing that
+project as `--cwd`.
 
 | File | Targets |
 | --- | --- |
@@ -177,8 +181,11 @@ as `--cwd`.
 | `examples/lean/algebra_order.lean` | `sq_add_sq_nonneg`, `two_mul_le_sq_add_sq`, `sq_sub_sq_factor`, `cube_add_expansion`, `square_le_self_on_unit_interval` |
 | `examples/lean/sets_functions.lean` | `preimage_inter_eq`, `preimage_subset_preimage`, `image_subset_of_mapsTo`, `injective_from_left_inverse`, `surjective_from_right_inverse` |
 | `examples/lean/number_theory_nat.lean` | `nat_add_cancel_bench`, `nat_mul_pos_bench`, `nat_mod_lt_bench`, `nat_square_eq_mul`, `nat_dvd_trans_bench` |
+| `examples/lean/icml26_binary_heap.lean` | selected binary heap definitions such as `heapify`, `extract_min`, `insert`, `merge`, and `remove` |
+| `examples/lean/icml26_treap_analysis.lean` | `uniform_prob_sum_one`, `perm_prob_sum_one` |
+| `examples/lean/icml26_weighted_graph_prefix.lean` | selected weighted graph helpers and definitions through `Sym2order` |
 
-The suite file `examples/benchmark_cases.json` lists all 20 targets with labels,
+The suite file `examples/benchmark_cases.json` lists all 40 targets with labels,
 groups, sizes, and descriptions. Raw benchmark JSON is written to
 `benchmark_results/`, which is ignored by git.
 
@@ -312,6 +319,9 @@ lake env lean /path/to/LeanProbe/examples/lean/analysis_real.lean
 lake env lean /path/to/LeanProbe/examples/lean/algebra_order.lean
 lake env lean /path/to/LeanProbe/examples/lean/sets_functions.lean
 lake env lean /path/to/LeanProbe/examples/lean/number_theory_nat.lean
+lake env lean /path/to/LeanProbe/examples/lean/icml26_binary_heap.lean
+lake env lean /path/to/LeanProbe/examples/lean/icml26_treap_analysis.lean
+lake env lean /path/to/LeanProbe/examples/lean/icml26_weighted_graph_prefix.lean
 ```
 
 Run the target suite:
@@ -363,8 +373,11 @@ PYTHONPATH=src python -m pytest -q
 
 Additional validation performed for the May 13, 2026 numbers:
 
-- every positive example file passed `lake env lean`;
-- all 20 repeated target benchmark cases returned `success=true`;
+- every positive example file used for the May 13 benchmark tables passed
+  `lake env lean`;
+- all 20 compact repeated target benchmark cases returned `success=true`;
+- the longer `icml26_*` example files pass `lake env lean`, and all 20 expanded
+  ICML-derived benchmark cases returned `success=true` in a one-run smoke suite;
 - all 4 sequential same-file benchmark files reported successful partial-sorry
   and full-without-sorry scenarios for Lake and LeanProbe;
 - the same Python tests and benchmark suite passed on `larapc2`;

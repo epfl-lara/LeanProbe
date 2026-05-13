@@ -159,6 +159,166 @@
       "group": "number_theory_nat",
       "size": "short",
       "description": "Divisibility transitivity"
+    },
+    {
+      "label": "icml_heap_is_min_heap",
+      "file_path": "lean/icml26_binary_heap.lean",
+      "theorem_id": "is_min_heap",
+      "group": "icml26_binary_heap",
+      "size": "long",
+      "description": "Binary tree min-heap predicate from ICML challenge definitions"
+    },
+    {
+      "label": "icml_heap_heapify",
+      "file_path": "lean/icml26_binary_heap.lean",
+      "theorem_id": "heapify",
+      "group": "icml26_binary_heap",
+      "size": "long",
+      "description": "Binary heap heapify operation"
+    },
+    {
+      "label": "icml_heap_get_last",
+      "file_path": "lean/icml26_binary_heap.lean",
+      "theorem_id": "get_last",
+      "group": "icml26_binary_heap",
+      "size": "medium",
+      "description": "Binary tree last-node extraction helper"
+    },
+    {
+      "label": "icml_heap_extract_min",
+      "file_path": "lean/icml26_binary_heap.lean",
+      "theorem_id": "extract_min",
+      "group": "icml26_binary_heap",
+      "size": "medium",
+      "description": "Binary heap extract-min operation"
+    },
+    {
+      "label": "icml_heap_heap_min",
+      "file_path": "lean/icml26_binary_heap.lean",
+      "theorem_id": "heap_min",
+      "group": "icml26_binary_heap",
+      "size": "medium",
+      "description": "Binary heap minimum computation"
+    },
+    {
+      "label": "icml_heap_insert",
+      "file_path": "lean/icml26_binary_heap.lean",
+      "theorem_id": "insert",
+      "group": "icml26_binary_heap",
+      "size": "medium",
+      "description": "Binary tree heap insertion"
+    },
+    {
+      "label": "icml_heap_merge",
+      "file_path": "lean/icml26_binary_heap.lean",
+      "theorem_id": "merge",
+      "group": "icml26_binary_heap",
+      "size": "medium",
+      "description": "Binary tree heap merge"
+    },
+    {
+      "label": "icml_heap_remove",
+      "file_path": "lean/icml26_binary_heap.lean",
+      "theorem_id": "remove",
+      "group": "icml26_binary_heap",
+      "size": "medium",
+      "description": "Binary tree heap removal"
+    },
+    {
+      "label": "icml_heap_size",
+      "file_path": "lean/icml26_binary_heap.lean",
+      "theorem_id": "size",
+      "group": "icml26_binary_heap",
+      "size": "short",
+      "description": "Binary tree size computation"
+    },
+    {
+      "label": "icml_treap_uniform_prob",
+      "file_path": "lean/icml26_treap_analysis.lean",
+      "theorem_id": "uniform_prob_sum_one",
+      "group": "icml26_treap_analysis",
+      "size": "medium",
+      "description": "Uniform finite probability mass sums to one"
+    },
+    {
+      "label": "icml_treap_perm_prob",
+      "file_path": "lean/icml26_treap_analysis.lean",
+      "theorem_id": "perm_prob_sum_one",
+      "group": "icml26_treap_analysis",
+      "size": "medium",
+      "description": "Uniform probability mass over permutations sums to one"
+    },
+    {
+      "label": "icml_wgraph_subset_list",
+      "file_path": "lean/icml26_weighted_graph_prefix.lean",
+      "theorem_id": "subsetList",
+      "group": "icml26_weighted_graph",
+      "size": "medium",
+      "description": "List-to-finset subset helper for weighted graph development"
+    },
+    {
+      "label": "icml_wgraph_memconsrw",
+      "file_path": "lean/icml26_weighted_graph_prefix.lean",
+      "theorem_id": "memconsrw",
+      "group": "icml26_weighted_graph",
+      "size": "medium",
+      "description": "Membership rewrite helper for list cons finsets"
+    },
+    {
+      "label": "icml_wgraph_subset_comb",
+      "file_path": "lean/icml26_weighted_graph_prefix.lean",
+      "theorem_id": "subset_comb",
+      "group": "icml26_weighted_graph",
+      "size": "medium",
+      "description": "Combined subset helper for weighted graph development"
+    },
+    {
+      "label": "icml_wgraph_empty",
+      "file_path": "lean/icml26_weighted_graph_prefix.lean",
+      "theorem_id": "emptyGraph",
+      "group": "icml26_weighted_graph",
+      "size": "long",
+      "description": "Empty weighted graph construction"
+    },
+    {
+      "label": "icml_wgraph_subgraph",
+      "file_path": "lean/icml26_weighted_graph_prefix.lean",
+      "theorem_id": "IsSubgraph",
+      "group": "icml26_weighted_graph",
+      "size": "long",
+      "description": "Weighted subgraph predicate"
+    },
+    {
+      "label": "icml_wgraph_from_edge_subset_subgraph",
+      "file_path": "lean/icml26_weighted_graph_prefix.lean",
+      "theorem_id": "SimpleGraph.from_edge_subset_is_subgraph",
+      "group": "icml26_weighted_graph",
+      "size": "long",
+      "description": "FromEdgeSet subgraph lemma"
+    },
+    {
+      "label": "icml_wgraph_from_edge_subset",
+      "file_path": "lean/icml26_weighted_graph_prefix.lean",
+      "theorem_id": "FromEdgeSubset",
+      "group": "icml26_weighted_graph",
+      "size": "long",
+      "description": "Weighted graph construction from an edge subset"
+    },
+    {
+      "label": "icml_wgraph_mst",
+      "file_path": "lean/icml26_weighted_graph_prefix.lean",
+      "theorem_id": "IsMST",
+      "group": "icml26_weighted_graph",
+      "size": "medium",
+      "description": "Minimum spanning tree predicate"
+    },
+    {
+      "label": "icml_wgraph_sym2order",
+      "file_path": "lean/icml26_weighted_graph_prefix.lean",
+      "theorem_id": "Sym2order",
+      "group": "icml26_weighted_graph",
+      "size": "medium",
+      "description": "Ordering relation on symmetric edges"
     }
   ]
 }

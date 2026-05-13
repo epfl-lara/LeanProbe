@@ -188,14 +188,26 @@ def _local_repl_dir(project_root: Path) -> Path | None:
 
 
 def _doc_boundary_start(text: str, declaration_start: int) -> int:
-    cursor = declaration_start
+    start = declaration_start
+    while True:
+        cursor = start
+        while cursor > 0 and text[cursor - 1] in " \t\r\n":
+            cursor -= 1
+        line_start = text.rfind("\n", 0, cursor) + 1
+        line = text[line_start:cursor].strip()
+        if line.startswith("@[") and line.endswith("]"):
+            start = line_start
+            continue
+        break
+
+    cursor = start
     while cursor > 0 and text[cursor - 1] in " \t\r\n":
         cursor -= 1
     if cursor >= 2 and text[:cursor].endswith("-/"):
         start = text.rfind("/-", 0, cursor)
         if start >= 0 and text.startswith("/--", start) and text[cursor:declaration_start].strip() == "":
             return text.rfind("\n", 0, start) + 1
-    return declaration_start
+    return start
 
 
 def _line_number(text: str, offset: int) -> int:

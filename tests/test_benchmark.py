@@ -42,6 +42,25 @@ def test_target_replacement_extracts_named_declaration(tmp_path):
     assert "trivial" in replacement
 
 
+def test_segmentation_attaches_standalone_attribute_to_following_declaration():
+    text = "\n".join(
+        [
+            "import Mathlib",
+            "",
+            "def first : Nat := 1",
+            "@[simp]",
+            "theorem second : first = 1 := by",
+            "  rfl",
+            "",
+        ]
+    )
+
+    _header, segments = benchmark.segment_file(text)
+
+    assert segments[0].text.strip() == "def first : Nat := 1"
+    assert segments[1].text.startswith("@[simp]\ntheorem second")
+
+
 def test_partial_declaration_replaces_body_with_sorry():
     text = "theorem demo (n : Nat) : n = n := by\n  rfl\n"
 
@@ -228,3 +247,22 @@ def test_example_benchmark_cases_point_to_existing_targets():
         _, segments = benchmark.segment_file(lean_file.read_text(encoding="utf-8"))
         names = {segment.name for segment in segments}
         assert case.theorem_id in names, case.label
+
+
+def test_icml26_examples_are_longer_complete_sources():
+    repo_root = Path(__file__).resolve().parents[1]
+    expected_min_lines = {
+        "icml26_binary_heap.lean": 150,
+        "icml26_treap_analysis.lean": 60,
+        "icml26_weighted_graph_prefix.lean": 180,
+    }
+
+    for filename, min_lines in expected_min_lines.items():
+        lean_file = repo_root / "examples" / "lean" / filename
+        text = lean_file.read_text(encoding="utf-8")
+        _, segments = benchmark.segment_file(text)
+
+        assert text.count("\n") + 1 >= min_lines
+        assert "sorry" not in text
+        assert "admit" not in text
+        assert segments
