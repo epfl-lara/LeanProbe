@@ -159,6 +159,34 @@ theorem add_comm_candidate (x y : Nat) : x + y = y + x := by
 Long diagnostics and proof states are truncated; read `messages` and `tactics`
 for the raw structured data.
 
+## Limitations
+
+Declarations inside a `mutual ... end` block are not individually targetable —
+LeanProbe keeps the whole block as one prior-context chunk because Lean
+elaborates it as a unit. Targeting a name found inside a mutual block returns
+`error_code="target_not_found"` with a hint explaining this.
+
+LeanProbe checks the submitted chunk against its prepared environment, not the
+whole project. Use `lake build`/CI for whole-file or whole-project acceptance.
+
+## Relation to lean-lsp MCP servers
+
+LeanProbe and LSP-backed servers such as `lean-lsp-mcp` are complementary. Use
+lean-lsp for editor-like navigation — goal at a cursor position, hover, lemma
+search (loogle/leansearch), references, code actions. Use LeanProbe for fast
+"does this compile?" verification of snippets and declaration replacements
+against a warm environment.
+
+## Environment variables
+
+The CLI flags map to env vars for MCP/process configuration:
+
+- `LEAN_PROBE_LAKE_PATH` — path to the `lake` executable (else `PATH`, then elan).
+- `LEAN_PROBE_AUTO_BUILD` — `1` to let LeanInteract build the project. Keep `0`
+  for stdio MCP clients (build output on stdout corrupts the JSON-RPC stream).
+- `LEAN_PROBE_LOCAL_REPL_PATH` — use a specific local Lean REPL checkout.
+- `LEAN_PROBE_VERBOSE` — `1` for verbose LeanInteract setup (stderr).
+
 ## Recommended Workflows
 
 ### Iterating on one declaration
