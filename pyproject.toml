@@ -37,10 +37,10 @@ dev = ["build", "mypy", "pre-commit", "pytest", "pytest-xdist", "ruff", "twine"]
 lean-probe = "lean_probe.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/Lemmy00/LeanProbe"
-Documentation = "https://github.com/Lemmy00/LeanProbe#readme"
-Issues = "https://github.com/Lemmy00/LeanProbe/issues"
-Source = "https://github.com/Lemmy00/LeanProbe"
+Homepage = "https://github.com/epfl-lara/LeanProbe"
+Documentation = "https://github.com/epfl-lara/LeanProbe#readme"
+Issues = "https://github.com/epfl-lara/LeanProbe/issues"
+Source = "https://github.com/epfl-lara/LeanProbe"
 
 [tool.setuptools.packages.find]
 where = ["src"]
