@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import atexit
 import importlib
+import logging
 import os
 import shutil
 import signal
+import sys
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -373,7 +375,23 @@ def _install_shutdown_handlers(probe: LeanProbe) -> None:
             signal.signal(sig, _chained_handler(previous))
 
 
+def _configure_stdio_logging() -> None:
+    """Keep backend diagnostics off the JSON-RPC stream without changing the Python API."""
+    try:
+        importlib.import_module("lean_interact")
+    except Exception:
+        # Missing backend dependencies remain structured tool errors. Configure
+        # its logger even if a partial import already installed a stdout handler.
+        pass
+    logger = logging.getLogger("lean_interact")
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(levelname)s [%(name)s] %(message)s"))
+    logger.handlers = [handler]
+    logger.propagate = False
+
+
 def run() -> None:
+    _configure_stdio_logging()
     probe = _probe_from_env()
     _install_shutdown_handlers(probe)
     try:

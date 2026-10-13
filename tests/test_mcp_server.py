@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from importlib.metadata import version
 from pathlib import Path
 
@@ -133,6 +135,43 @@ def test_in_memory_wire_round_trip():
             assert data["ok"] is True
 
     anyio.run(_run)
+
+
+def test_stdio_backend_warnings_preserve_pure_json_stdout():
+    """Exercise the real backend logger in an isolated process without a Lean project."""
+    script = """
+import json
+import lean_interact
+from lean_interact.utils import logger
+from lean_probe.mcp_server import _configure_stdio_logging
+original = lean_interact.LeanServer.run
+_configure_stdio_logging()
+_configure_stdio_logging()
+logger.warning('simulated REPL version mismatch')
+assert lean_interact.LeanServer.run is original
+print(json.dumps({'jsonrpc': '2.0', 'result': 'ok'}))
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"jsonrpc": "2.0", "result": "ok"}
+    assert result.stderr.count("simulated REPL version mismatch") == 1
+
+
+def test_stdio_missing_backend_still_configures_diagnostics(monkeypatch, capsys):
+    """Leave dependency failure available to lean_status while reserving stdout for RPC."""
+    import logging
+
+    logger = logging.getLogger("lean_interact")
+    monkeypatch.setattr(logger, "handlers", [])
+    monkeypatch.setattr(logger, "propagate", True)
+    monkeypatch.setattr(
+        mcp_server.importlib, "import_module", lambda name: (_ for _ in ()).throw(ImportError("missing backend"))
+    )
+    mcp_server._configure_stdio_logging()
+    logger.warning("backend is unavailable")
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "backend is unavailable" in captured.err
 
 
 def test_probe_reads_environment(monkeypatch):

@@ -1,5 +1,8 @@
 # Changelog
 
+- Keep LeanInteract warnings on stderr in the native MCP server, preserving clean
+  JSON-RPC framing without modifying backend methods or the direct Python API.
+
 ## 0.4.1.dev0 - Development
 
 - Bound file target and standalone snippet workers with configurable LRU limits,
