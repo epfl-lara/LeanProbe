@@ -2,7 +2,7 @@
 
 Public API (stable): ``capabilities``, ``check_code``, ``prepare_file``,
 ``check_target``, ``feedback``, ``proof_state_from_code``, ``tactic_step``,
-``close_state``, ``close``.
+``close_state``, ``close_project``, ``close``.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ from .segmentation import (
     LeanIncrementalSegment,
     _find_segment,
     _mutual_target_hint,
+    _normalize_inline_scoped_declarations,
     _sha,
     segment_file,
 )
@@ -52,6 +53,8 @@ from .sessions import (
 )
 
 DEFAULT_MAX_CODE_SESSIONS = 16
+DEFAULT_MAX_FILE_SESSIONS = 4
+DEFAULT_MAX_SCRATCH_SESSIONS = 2
 # Matches the start of a Lean declaration; used to reject bare proof bodies passed
 # as `replacement` (the most common agent footgun).
 _DECLARATION_KEYWORD = re.compile(
@@ -61,7 +64,7 @@ _DECLARATION_KEYWORD = re.compile(
 
 
 def _looks_like_declaration(text: str) -> bool:
-    return bool(_DECLARATION_KEYWORD.search(str(text or "")))
+    return bool(_DECLARATION_KEYWORD.search(_normalize_inline_scoped_declarations(str(text or ""))))
 
 
 class LeanProbe:
@@ -75,35 +78,142 @@ class LeanProbe:
         lake_path: str | Path = "lake",
         verbose: bool = False,
         max_code_sessions: int = DEFAULT_MAX_CODE_SESSIONS,
+        max_file_sessions: int = DEFAULT_MAX_FILE_SESSIONS,
+        max_scratch_sessions: int = DEFAULT_MAX_SCRATCH_SESSIONS,
     ) -> None:
         self.auto_build = auto_build
         self.local_repl_path = Path(local_repl_path).expanduser().resolve() if local_repl_path else None
         self.lake_path = Path(lake_path)
         self.verbose = verbose
-        self._sessions: dict[tuple[str, str], _IncrementalSession] = {}
+        self._sessions: OrderedDict[tuple[str, str], _IncrementalSession] = OrderedDict()
         self._code_sessions: OrderedDict[str, _CodeSession] = OrderedDict()
-        self._scratch_sessions: dict[str, _CodeSession] = {}
+        self._scratch_sessions: OrderedDict[str, _CodeSession] = OrderedDict()
+        self._project_generations: dict[str, str] = {}
         self.max_code_sessions = max(1, int(max_code_sessions))
+        self.max_file_sessions = max(1, int(max_file_sessions))
+        self.max_scratch_sessions = max(1, int(max_scratch_sessions))
         self._lock = threading.RLock()
 
     def close(self) -> None:
         with self._lock:
-            for session in list(self._sessions.values()):
-                session.close()
-            self._sessions.clear()
-            for code_session in list(self._code_sessions.values()):
-                code_session.close()
-            self._code_sessions.clear()
-            for scratch in list(self._scratch_sessions.values()):
-                scratch.close()
-            self._scratch_sessions.clear()
+            # Preserve legacy best-effort shutdown for ordinary workers. A worker
+            # already quarantined by verified retirement must retain ownership even
+            # across close(), or a later call could allocate over an orphan process.
+            pools: tuple[OrderedDict[Any, Any], ...] = (self._sessions, self._code_sessions, self._scratch_sessions)
+            for pool in pools:
+                for key, session in list(pool.items()):
+                    if session.retirement_error:
+                        if sessions.retire_session(session):
+                            continue
+                    else:
+                        session.close()
+                    pool.pop(key)
+            retained_projects = {key[0] for key in self._sessions}
+            retained_projects.update(self._scratch_sessions)
+            retained_projects.update(str(session.cwd or "") for session in self._code_sessions.values())
+            self._project_generations = {
+                key: generation for key, generation in self._project_generations.items() if key in retained_projects
+            }
+
+    def close_project(self, cwd: str | Path) -> dict[str, Any]:
+        """Close only this project's workers and forget its caller-supplied generation."""
+
+        with self._lock:
+            project_root = self._resolve_project_root(cwd)
+            if project_root is None:
+                return error_envelope(
+                    action="close_project",
+                    error="Lean project root not detected",
+                    error_code=ErrorCode.NO_PROJECT_ROOT,
+                    searched=self._root_search_candidates(cwd),
+                )
+            counts, error = self._close_project_sessions(project_root)
+            if error:
+                return error_envelope(
+                    action="close_project",
+                    error=error,
+                    error_code=ErrorCode.SESSION_CLEANUP_FAILED,
+                    project_root=project_root,
+                    closed_sessions=counts,
+                )
+            self._project_generations.pop(str(project_root), None)
+            return {
+                "success": True,
+                "ok": True,
+                "backend": BACKEND,
+                "tool": TOOL,
+                "action": "close_project",
+                "project_root": str(project_root),
+                "closed_sessions": counts,
+            }
+
+    def _close_project_sessions(self, project_root: Path | None) -> tuple[dict[str, int], str]:
+        """Discard all environment families for one resolved project, retaining other projects."""
+
+        key = str(project_root or "")
+        counts = {"file": 0, "scratch": 0, "proof_state": 0}
+        for session_key in list(self._sessions):
+            if session_key[0] == key:
+                error = sessions.retire_session(self._sessions[session_key])
+                if error:
+                    return counts, error
+                self._sessions.pop(session_key)
+                counts["file"] += 1
+        scratch = self._scratch_sessions.get(key)
+        if scratch is not None:
+            error = sessions.retire_session(scratch)
+            if error:
+                return counts, error
+            self._scratch_sessions.pop(key)
+            counts["scratch"] += 1
+        for session_id, code_session in list(self._code_sessions.items()):
+            if code_session.cwd == project_root:
+                error = sessions.retire_session(code_session)
+                if error:
+                    return counts, error
+                self._code_sessions.pop(session_id)
+                counts["proof_state"] += 1
+        return counts, ""
+
+    def _activate_generation(self, project_root: Path | None, generation: str | None) -> tuple[str | None, str]:
+        """Invalidate this project's workers when its caller-owned identity changes.
+
+        No dependency files are inspected or built here. Callers must change the token
+        after preparing changed imports, build options, or toolchain artifacts. Omitting
+        the token retains the active identity for compatibility with unversioned callers.
+        """
+
+        key = str(project_root or "")
+        if generation is not None and self._project_generations.get(key) != generation:
+            _counts, error = self._close_project_sessions(project_root)
+            if error:
+                return self._project_generations.get(key), error
+            self._project_generations[key] = generation
+        # A failed retirement may have cleared backend handles while the process
+        # remains alive. Quarantine it so an old-token retry cannot bypass verified
+        # cleanup through the legacy dead-server reconstruction path.
+        for session_key, file_session in self._sessions.items():
+            if session_key[0] == key and file_session.retirement_error:
+                return self._project_generations.get(key), file_session.retirement_error
+        scratch = self._scratch_sessions.get(key)
+        if scratch is not None and scratch.retirement_error:
+            return self._project_generations.get(key), scratch.retirement_error
+        for code_session in self._code_sessions.values():
+            if code_session.cwd == project_root and code_session.retirement_error:
+                return self._project_generations.get(key), code_session.retirement_error
+        return self._project_generations.get(key), ""
 
     # ------------------------------------------------------------------ status
 
-    def capabilities(self, cwd: str | Path | None = None, *, warm: bool = False) -> dict[str, Any]:
+    def capabilities(
+        self, cwd: str | Path | None = None, *, warm: bool = False, generation: str | None = None
+    ) -> dict[str, Any]:
         with self._lock:
             import_error = sessions.import_error()
             project_root = self._resolve_project_root(cwd)
+            active_generation, generation_error = (
+                self._activate_generation(project_root, generation) if project_root is not None else (None, "")
+            )
             repl_dir = self._select_repl_dir(project_root) if project_root else None
             degraded: list[str] = []
             degraded_codes: list[str] = []
@@ -113,15 +223,22 @@ class LeanProbe:
             if project_root is None:
                 degraded.append("Lean project root not detected")
                 degraded_codes.append(ErrorCode.NO_PROJECT_ROOT)
+            if generation_error:
+                degraded.append(generation_error)
+                degraded_codes.append(ErrorCode.SESSION_CLEANUP_FAILED)
             warmed = False
             warm_error = ""
-            if warm and project_root is not None and not import_error:
+            if warm and project_root is not None and not import_error and not generation_error:
                 session, warm_error = self._get_scratch_session(project_root)
                 warmed = session is not None
                 if warm_error:
                     degraded.append(warm_error)
-            return {
-                "available": not import_error and bool(project_root),
+                    warm_error_code = _error_code_for_message(warm_error)
+                    degraded_codes.append(warm_error_code)
+                    if warm_error_code == ErrorCode.SESSION_CLEANUP_FAILED:
+                        generation_error = warm_error
+            payload = {
+                "available": not import_error and bool(project_root) and not generation_error,
                 "tool": TOOL,
                 "backend": BACKEND,
                 "project_root": str(project_root or ""),
@@ -132,12 +249,26 @@ class LeanProbe:
                 ],
                 "code_sessions": list(self._code_sessions.keys()),
                 "max_code_sessions": self.max_code_sessions,
+                "scratch_sessions": list(self._scratch_sessions.keys()),
+                "max_file_sessions": self.max_file_sessions,
+                "max_scratch_sessions": self.max_scratch_sessions,
+                "generation": active_generation,
                 "degraded_reasons": degraded,
                 "degraded_codes": degraded_codes,
                 "hint": hint_for_code(ErrorCode.NO_PROJECT_ROOT, searched=self._root_search_candidates(cwd))
                 if project_root is None
                 else "",
             }
+            if generation_error:
+                payload.update(
+                    error_envelope(
+                        action="status",
+                        error=generation_error,
+                        error_code=ErrorCode.SESSION_CLEANUP_FAILED,
+                        project_root=project_root,
+                    )
+                )
+            return payload
 
     # --------------------------------------------------------------- snippet check
 
@@ -148,6 +279,7 @@ class LeanProbe:
         cwd: str | Path | None = None,
         include_tactics: bool = False,
         timeout_s: int = 90,
+        generation: str | None = None,
     ) -> dict[str, Any]:
         """Check a standalone Lean snippet (imports + declarations) and report diagnostics."""
 
@@ -159,6 +291,15 @@ class LeanProbe:
                     error="Lean project root not detected",
                     error_code=ErrorCode.NO_PROJECT_ROOT,
                     searched=self._root_search_candidates(cwd),
+                    elapsed_s=0.0,
+                )
+            active_generation, generation_error = self._activate_generation(project_root, generation)
+            if generation_error:
+                return error_envelope(
+                    action="check",
+                    error=generation_error,
+                    error_code=ErrorCode.SESSION_CLEANUP_FAILED,
+                    project_root=project_root,
                     elapsed_s=0.0,
                 )
             response = None
@@ -223,7 +364,7 @@ class LeanProbe:
                 "sorries": sorries,
                 "tactics": tactics,
                 "feedback_lean": _feedback_lean(code, messages, tactics) if (messages or tactics) else "",
-                "cache": {"reused_server": reused},
+                "cache": {"reused_server": reused, "generation": active_generation},
             }
 
     # --------------------------------------------------------------- file targets
@@ -235,6 +376,7 @@ class LeanProbe:
         theorem_id: str = "",
         cwd: str | Path | None = None,
         timeout_s: int = 90,
+        generation: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             return self._check(
@@ -245,6 +387,7 @@ class LeanProbe:
                 replacement="",
                 include_tactics=False,
                 timeout_s=timeout_s,
+                generation=generation,
             )
 
     def check_target(
@@ -256,6 +399,7 @@ class LeanProbe:
         replacement: str = "",
         include_tactics: bool = False,
         timeout_s: int = 90,
+        generation: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             return self._check(
@@ -266,6 +410,7 @@ class LeanProbe:
                 replacement=replacement,
                 include_tactics=include_tactics,
                 timeout_s=timeout_s,
+                generation=generation,
             )
 
     def feedback(
@@ -276,6 +421,7 @@ class LeanProbe:
         cwd: str | Path | None = None,
         replacement: str = "",
         timeout_s: int = 90,
+        generation: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             return self._check(
@@ -286,6 +432,7 @@ class LeanProbe:
                 replacement=replacement,
                 include_tactics=True,
                 timeout_s=timeout_s,
+                generation=generation,
             )
 
     # --------------------------------------------------------------- proof states
@@ -297,6 +444,7 @@ class LeanProbe:
         cwd: str | Path | None = None,
         include_tactics: bool = False,
         timeout_s: int = 90,
+        generation: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             project_root = self._resolve_project_root(cwd)
@@ -306,6 +454,24 @@ class LeanProbe:
                     error="Lean project root not detected",
                     error_code=ErrorCode.NO_PROJECT_ROOT,
                     searched=self._root_search_candidates(cwd),
+                    elapsed_s=0.0,
+                )
+            active_generation, generation_error = self._activate_generation(project_root, generation)
+            if generation_error:
+                return error_envelope(
+                    action="state",
+                    error=generation_error,
+                    error_code=ErrorCode.SESSION_CLEANUP_FAILED,
+                    project_root=project_root,
+                    elapsed_s=0.0,
+                )
+            cleanup_error = self._make_room(self._code_sessions, self.max_code_sessions)
+            if cleanup_error:
+                return error_envelope(
+                    action="state",
+                    error=cleanup_error,
+                    error_code=ErrorCode.SESSION_CLEANUP_FAILED,
+                    project_root=project_root,
                     elapsed_s=0.0,
                 )
             session_id = str(uuid.uuid4())
@@ -355,6 +521,7 @@ class LeanProbe:
                 "error": run_error,
                 "elapsed_s": round(elapsed, 3),
                 "project_root": str(project_root or ""),
+                "generation": active_generation,
                 "messages": messages,
                 "sorries": sorries,
                 "tactics": _tactic_payloads(response) if response is not None and include_tactics else [],
@@ -365,7 +532,7 @@ class LeanProbe:
 
     def close_state(self, session_id: str) -> dict[str, Any]:
         with self._lock:
-            session = self._code_sessions.pop(session_id, None)
+            session = self._code_sessions.get(session_id)
             if session is None:
                 return error_envelope(
                     action="close_state",
@@ -373,6 +540,16 @@ class LeanProbe:
                     error_code=ErrorCode.UNKNOWN_SESSION,
                     session_id=session_id,
                 )
+            if session.retirement_error:
+                error = sessions.retire_session(session)
+                if error:
+                    return error_envelope(
+                        action="close_state",
+                        error=error,
+                        error_code=ErrorCode.SESSION_CLEANUP_FAILED,
+                        session_id=session_id,
+                    )
+            self._code_sessions.pop(session_id)
             session.close()
             return {
                 "success": True,
@@ -398,6 +575,13 @@ class LeanProbe:
                     action="step",
                     error="unknown LeanProbe proof session",
                     error_code=ErrorCode.UNKNOWN_SESSION,
+                    session_id=session_id,
+                )
+            if session.retirement_error:
+                return error_envelope(
+                    action="step",
+                    error=session.retirement_error,
+                    error_code=ErrorCode.SESSION_CLEANUP_FAILED,
                     session_id=session_id,
                 )
             self._code_sessions.move_to_end(session_id)
@@ -515,10 +699,19 @@ class LeanProbe:
         repl_dir = self._select_repl_dir(project_root)
         key = self._session_key(project_root, file_path)
         existing = self._sessions.get(key)
+        if existing is not None and existing.retirement_error:
+            return None, existing.retirement_error
         if existing and existing.repl_dir == repl_dir:
+            self._sessions.move_to_end(key)
             return existing, ""
         if existing:
-            existing.close()
+            error = sessions.retire_session(existing)
+            if error:
+                return None, error
+            self._sessions.pop(key)
+        error = self._make_room(self._sessions, self.max_file_sessions)
+        if error:
+            return None, error
         session, error = self._new_session(project_root, file_path, repl_dir)
         if session is not None:
             self._sessions[key] = session
@@ -551,9 +744,17 @@ class LeanProbe:
     def _remember_code_session(self, session_id: str, session: _CodeSession) -> None:
         self._code_sessions[session_id] = session
         self._code_sessions.move_to_end(session_id)
-        while len(self._code_sessions) > self.max_code_sessions:
-            _old_id, old_session = self._code_sessions.popitem(last=False)
-            old_session.close()
+
+    def _make_room(self, pool: OrderedDict[Any, Any], limit: int) -> str:
+        """Retire LRU workers before allocation; retain failed retirements in their pool."""
+
+        while len(pool) >= limit:
+            key = next(iter(pool))
+            error = sessions.retire_session(pool[key])
+            if error:
+                return error
+            pool.pop(key)
+        return ""
 
     def _restart_code_session(self, session_id: str) -> tuple[Any | None, str]:
         session = self._code_sessions.get(session_id)
@@ -571,10 +772,16 @@ class LeanProbe:
     def _get_scratch_session(self, project_root: Path | None) -> tuple[_CodeSession | None, str]:
         key = str(project_root or "")
         existing = self._scratch_sessions.get(key)
+        if existing is not None and existing.retirement_error:
+            return None, existing.retirement_error
         if existing is not None:
+            self._scratch_sessions.move_to_end(key)
             self._scratch_was_reused = True
             return existing, ""
         self._scratch_was_reused = False
+        error = self._make_room(self._scratch_sessions, self.max_scratch_sessions)
+        if error:
+            return None, error
         session, error = self._new_code_session(project_root)
         if session is not None:
             self._scratch_sessions[key] = session
@@ -677,6 +884,7 @@ class LeanProbe:
         replacement: str,
         include_tactics: bool,
         timeout_s: int,
+        generation: str | None = None,
     ) -> dict[str, Any]:
         normalized_action = {"prepare_file": "prepare", "check_target": "check"}.get(action, action)
         project_root = self._resolve_project_root(cwd, file_path)
@@ -707,6 +915,15 @@ class LeanProbe:
             )
         text = resolved.read_text(encoding="utf-8")
         header, segments = segment_file(text)
+        active_generation, generation_error = self._activate_generation(project_root, generation)
+        if generation_error:
+            return error_envelope(
+                action=normalized_action,
+                error=generation_error,
+                error_code=ErrorCode.SESSION_CLEANUP_FAILED,
+                file=resolved,
+                project_root=project_root,
+            )
 
         # Run the pipeline; on a dead REPL, restart once and rebuild from scratch
         # (fresh env ids — never replay a stale env against a restarted server).
@@ -735,6 +952,7 @@ class LeanProbe:
             if payload.get("error_code") == ErrorCode.DEAD_SERVER and attempt == 0:
                 self._restart_session(session)
                 continue
+            payload.setdefault("cache", {})["generation"] = active_generation
             return payload
         return payload
 

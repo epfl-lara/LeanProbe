@@ -66,7 +66,8 @@ text). Every failure also carries a one-line `hint` telling you what to do next.
 Codes: `no_project_root`, `file_not_found`, `target_not_found`,
 `replacement_not_a_declaration`, `lean_interact_unavailable`,
 `lean_interact_start_failed`, `header_failed`, `prior_decl_failed`,
-`dead_server`, `session_dead`, `unknown_session`, `timeout`, `backend_error`.
+`dead_server`, `session_dead`, `session_cleanup_failed`, `unknown_session`,
+`timeout`, `backend_error`.
 
 ## Project Root (`cwd`)
 
@@ -90,8 +91,42 @@ The first call after startup pays cold-start (REPL boot plus import
 elaboration; tens of seconds for Mathlib). Allow a generous client timeout on
 the first call, or call `lean_status` with `warm=true` once to pre-boot.
 Subsequent `lean_check_target` calls on the same file reuse the warm environment.
+Scoped declarations, including inline and stacked `... in` command wrappers,
+are handled by LeanProbe directly. Call the tools without patching their parser.
 Proof-state and session ids live only inside the running server process;
 recreate them after a restart.
+
+File target workers, snippet workers, and interactive proof-state workers have
+separate LRU limits (defaults: 4, 2, and 16). Evicted file/snippet workers start
+cold on the next call; evicted proof-state ids return `unknown_session` and must
+be recreated. `lean_status` reports all limits and live pools. These bounds
+limit worker count, not total RAM or memory retained inside one REPL.
+Pool eviction and generation/project cleanup verify worker exit before releasing
+ownership or starting replacements. On `session_cleanup_failed`, the worker and
+the previous generation remain retained; arrange termination and retry cleanup.
+Partial cleanup counts include only workers verified stopped.
+Failed retirements are quarantined, so old-token checks and tactic steps cannot
+reuse them or trigger replacement through dead-server recovery.
+
+### Prepared dependency generations
+
+LeanProbe rereads the target file and matches its header and prior declarations.
+It does **not** automatically detect changes to imported source files or compiled
+artifacts at the same paths. Build changed dependencies first, then use the
+optional `generation` string on `lean_check`, `lean_check_target`,
+`lean_proof_state`, or `lean_status`. The first nonempty token, or a changed
+token, discards that project's existing file, snippet, and proof-state workers
+before checking; other projects remain warm. Existing proof-state ids for that
+project then return `unknown_session` and must be recreated.
+
+The caller owns the token: change it when the prepared imports, toolchain,
+or build options change. Keep it stable during proof-body iterations using the
+same prepared dependencies. LeanProbe does not calculate or validate dependency
+identities and does not build the project by default. An empty/omitted MCP token
+retains the active identity; unversioned callers must arrange freshness themselves
+(for example, by restarting the server after a dependency rebuild). In Python,
+`close_project(cwd)` can close only one project's workers, and the corresponding
+check/prepare/status methods also accept `generation`.
 
 ## `feedback_lean`
 
@@ -144,6 +179,12 @@ The CLI flags map to env vars for MCP/process configuration:
   for stdio MCP clients (build output on stdout corrupts the JSON-RPC stream).
 - `LEAN_PROBE_LOCAL_REPL_PATH` — use a specific local Lean REPL checkout.
 - `LEAN_PROBE_VERBOSE` — `1` for verbose LeanInteract setup (stderr).
+- `LEAN_PROBE_MAX_FILE_SESSIONS` — positive maximum of live file target workers
+  (default 4).
+- `LEAN_PROBE_MAX_SCRATCH_SESSIONS` — positive maximum of live snippet workers
+  (default 2, one per project or standalone context).
+- `LEAN_PROBE_MAX_CODE_SESSIONS` — positive maximum of interactive proof-state
+  workers (default 16). Evicted session ids must be recreated.
 
 ## Recommended Workflows
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.1.dev0 - Development
+
+- Bound file target and standalone snippet workers with configurable LRU limits,
+  defaulting to 4 and 2. Preserve the existing 16-worker proof-state default;
+  expose all three limits through MCP environment variables and status.
+- Add Python `close_project(cwd)` for project-scoped cleanup and optional
+  caller-owned `generation` identities to Python and existing MCP check,
+  target, status, and proof-state APIs. Changing a token invalidates every warm
+  worker for that project while preserving other projects. Dependency freshness
+  remains caller-owned; no automatic dependency scans or project builds occur.
+- Verify worker retirement on pool eviction and project/generation cleanup.
+  Retain ownership and the previous generation, and block replacement work,
+  if termination fails or exit cannot be verified; report `session_cleanup_failed`.
+- Handle scoped declarations, including inline and stacked command wrappers,
+  directly in the native parser with bounded declaration-window searches.
+- Own the linear REPL response reader in LeanProbe so direct Python and MCP
+  use does not require application-level patches of LeanInteract.
+
 ## 0.4.0 - 2026-06-26
 
 - Split the agent-facing contract out of `AGENTS.md` into a real, installable

@@ -16,6 +16,7 @@ class ErrorCode:
     LEAN_INTERACT_UNAVAILABLE = "lean_interact_unavailable"
     DEAD_SERVER = "dead_server"
     SESSION_DEAD = "session_dead"
+    SESSION_CLEANUP_FAILED = "session_cleanup_failed"
     UNKNOWN_SESSION = "unknown_session"
     NO_PROJECT_ROOT = "no_project_root"
     FILE_NOT_FOUND = "file_not_found"
@@ -38,6 +39,7 @@ ALL_ERROR_CODES = (
     ErrorCode.PRIOR_DECL_FAILED,
     ErrorCode.DEAD_SERVER,
     ErrorCode.SESSION_DEAD,
+    ErrorCode.SESSION_CLEANUP_FAILED,
     ErrorCode.UNKNOWN_SESSION,
     ErrorCode.TIMEOUT,
     ErrorCode.BACKEND_ERROR,
@@ -71,6 +73,8 @@ def _error_code_for_message(error: str) -> str:
     lowered = str(error or "").lower()
     if not lowered:
         return ""
+    if "session cleanup failed" in lowered:
+        return ErrorCode.SESSION_CLEANUP_FAILED
     if _timeout_error_text(lowered):
         return ErrorCode.TIMEOUT
     if "failed to start leaninteract server" in lowered:
@@ -132,6 +136,11 @@ def hint_for_code(code: str, *, searched: list[str] | None = None) -> str:
         return "The Lean REPL process died. Retry; for proof states call lean_proof_state again."
     if code == ErrorCode.UNKNOWN_SESSION:
         return "That session id is unknown (the server restarted). Call lean_proof_state to create a new one."
+    if code == ErrorCode.SESSION_CLEANUP_FAILED:
+        return (
+            "A worker could not be verified stopped; ownership and the previous generation remain retained. "
+            "Inspect the worker process, arrange its termination, and retry cleanup before starting replacement work."
+        )
     if code == ErrorCode.TIMEOUT:
         return (
             "The Lean call timed out. The environment is likely warm now, so a retry should be faster; "

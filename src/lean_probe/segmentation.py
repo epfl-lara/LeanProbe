@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from bisect import bisect_left
 from dataclasses import dataclass
 
 DECLARATION_KINDS = (
@@ -197,18 +198,20 @@ def _doc_boundary_start(text: str, declaration_start: int) -> int:
     cursor = start
     while cursor > 0 and text[cursor - 1] in " \t\r\n":
         cursor -= 1
-    if cursor >= 2 and text[:cursor].endswith("-/"):
+    if cursor >= 2 and text.endswith("-/", 0, cursor):
         start = text.rfind("/-", 0, cursor)
         if start >= 0 and text.startswith("/--", start) and text[cursor:declaration_start].strip() == "":
             return text.rfind("\n", 0, start) + 1
     return start
 
 
-def _line_number(text: str, offset: int) -> int:
+def _line_number(text: str, offset: int, newline_offsets: list[int] | None = None) -> int:
+    if newline_offsets is not None:
+        return bisect_left(newline_offsets, max(0, offset)) + 1
     return text.count("\n", 0, max(0, offset)) + 1
 
 
-def segment_file(text: str) -> tuple[str, list[LeanIncrementalSegment]]:
+def _segment_file_chunks(text: str, *, source_text: str | None = None) -> tuple[str, list[LeanIncrementalSegment]]:
     """Split a Lean file into a header and top-level declaration chunks."""
 
     code_mask = _lean_code_mask(text)
@@ -229,13 +232,15 @@ def segment_file(text: str) -> tuple[str, list[LeanIncrementalSegment]]:
     if not starts:
         return text, []
 
-    boundaries = [_doc_boundary_start(text, marker.declaration_start) for marker in starts]
-    header = text[: boundaries[0]].rstrip() + "\n"
+    source = text if source_text is None else source_text
+    newline_offsets = [match.start() for match in re.finditer("\n", source)]
+    boundaries = [_doc_boundary_start(source, marker.declaration_start) for marker in starts]
+    header = source[: boundaries[0]].rstrip() + "\n"
     segments: list[LeanIncrementalSegment] = []
     for index, marker in enumerate(starts):
         start = boundaries[index]
-        end = boundaries[index + 1] if index + 1 < len(boundaries) else len(text)
-        chunk = text[start:end].rstrip() + "\n"
+        end = boundaries[index + 1] if index + 1 < len(boundaries) else len(source)
+        chunk = source[start:end].rstrip() + "\n"
         segments.append(
             LeanIncrementalSegment(
                 index=index,
@@ -244,13 +249,114 @@ def segment_file(text: str) -> tuple[str, list[LeanIncrementalSegment]]:
                 start=start,
                 end=end,
                 declaration_start=marker.declaration_start,
-                start_line=_line_number(text, start),
-                end_line=_line_number(text, max(start, end - 1)),
+                start_line=_line_number(source, start, newline_offsets),
+                end_line=_line_number(source, max(start, end - 1), newline_offsets),
                 text=chunk,
                 text_hash=_sha(chunk),
             )
         )
     return header, segments
+
+
+_SCOPED_COMMAND_PREFIX_RE = r"(?:set_option|variable|include|omit|attribute|open(?:[ \t]+scoped)?)"
+_SCOPED_COMMAND_WRAPPER_BEFORE_DECL_RE = re.compile(
+    rf"(?m)(^[ \t]*(?:{_SCOPED_COMMAND_PREFIX_RE}[^\n]*\bin" r"(?:[ \t]*\n[ \t]*|[ \t]+))+)\Z"
+)
+_INLINE_SCOPED_DECLARATION_RE = re.compile(
+    rf"(?m)^(?P<wrapper>[ \t]*{_SCOPED_COMMAND_PREFIX_RE}\b[^\n]*\bin)"
+    r"(?P<space>[ \t]+)"
+    r"(?P<declaration>(?:(?:private|protected|noncomputable|unsafe|partial|nonrec|scoped|local)\s+)*"
+    r"(?:theorem|lemma|example|def|abbrev|opaque|axiom|instance|class|structure|inductive)\b)"
+)
+
+
+def _normalize_inline_scoped_declarations(text: str) -> str:
+    """Expose same-line scoped declarations to LeanProbe without shifting offsets."""
+
+    def replace(match: re.Match[str]) -> str:
+        spacing = match.group("space")
+        return match.group("wrapper") + "\n" + (" " * (len(spacing) - 1)) + match.group("declaration")
+
+    return _INLINE_SCOPED_DECLARATION_RE.sub(replace, text)
+
+
+def _rebuilt_segment(
+    segment: LeanIncrementalSegment,
+    text: str,
+    *,
+    start: int,
+    end: int,
+    newline_offsets: list[int] | None = None,
+) -> LeanIncrementalSegment:
+    """Return one segment rebuilt over an exact source range."""
+    segment_text = text[start:end]
+    return LeanIncrementalSegment(
+        index=int(segment.index),
+        kind=str(segment.kind),
+        name=str(segment.name),
+        start=start,
+        end=end,
+        declaration_start=int(getattr(segment, "declaration_start", start) or start),
+        start_line=_line_number(text, start, newline_offsets),
+        end_line=max(_line_number(text, end, newline_offsets) - 1, _line_number(text, start, newline_offsets)),
+        text=segment_text,
+        text_hash=hashlib.sha256(segment_text.encode("utf-8")).hexdigest(),
+    )
+
+
+def _repair_option_wrapped_segments(
+    text: str,
+    header: str,
+    segments: list[LeanIncrementalSegment],
+) -> tuple[str, list[LeanIncrementalSegment]]:
+    """Attach a preceding scoped command such as ``variable ... in`` to its declaration.
+
+    LeanProbe's generic segmenter otherwise places the wrapper in the header
+    or previous declaration. Incremental replay then elaborates a dangling
+    ``in`` and reports an unexpected EOF against the wrong prerequisite.
+    """
+    if not segments:
+        return header, segments
+    repaired = list(segments)
+    repaired_header = header
+    newline_offsets = [match.start() for match in re.finditer("\n", text)]
+    for index, segment in enumerate(tuple(repaired)):
+        start = int(getattr(segment, "start", 0) or 0)
+        # A wrapper belongs to the gap following the previous declaration.
+        # Searching every full prefix makes large files quadratic; retain the
+        # previous repaired start so same-line wrappers remain in the window.
+        search_start = int(getattr(repaired[index - 1], "start", 0) or 0) if index else 0
+        match = _SCOPED_COMMAND_WRAPPER_BEFORE_DECL_RE.search(text, search_start, start)
+        if match is None:
+            continue
+        wrapper_start = match.start(1)
+        if index == 0:
+            repaired_header = text[:wrapper_start]
+        else:
+            previous = repaired[index - 1]
+            previous_start = int(getattr(previous, "start", 0) or 0)
+            repaired[index - 1] = _rebuilt_segment(
+                previous,
+                text,
+                start=previous_start,
+                end=wrapper_start,
+                newline_offsets=newline_offsets,
+            )
+        repaired[index] = _rebuilt_segment(
+            segment,
+            text,
+            start=wrapper_start,
+            end=int(getattr(segment, "end", start) or start),
+            newline_offsets=newline_offsets,
+        )
+    return repaired_header, repaired
+
+
+def segment_file(text: str) -> tuple[str, list[LeanIncrementalSegment]]:
+    """Split source while preserving scoped commands and exact declaration ranges."""
+    normalized = _normalize_inline_scoped_declarations(text)
+    header, segments = _segment_file_chunks(normalized, source_text=text)
+    return _repair_option_wrapped_segments(text, header, segments)
 
 
 def _find_segment(segments: list[LeanIncrementalSegment], theorem_id: str) -> LeanIncrementalSegment | None:

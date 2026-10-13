@@ -40,6 +40,8 @@ from .payloads import (  # noqa: F401
 from .payloads import response_payload as _response_payload  # noqa: F401
 from .probe import (  # noqa: F401
     DEFAULT_MAX_CODE_SESSIONS,
+    DEFAULT_MAX_FILE_SESSIONS,
+    DEFAULT_MAX_SCRATCH_SESSIONS,
     LeanProbe,
     _looks_like_declaration,
 )

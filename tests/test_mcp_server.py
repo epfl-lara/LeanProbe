@@ -6,6 +6,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 import anyio
+import pytest
 
 import lean_probe
 from lean_probe import mcp_server
@@ -106,7 +107,7 @@ def test_tool_wrappers_route_to_injected_probe():
     assert check["action"] == "check" and check["kwargs"]["cwd"] == "/p"
     assert target["action"] == "check_target" and target["kwargs"]["theorem_id"] == "demo"
     assert fb["action"] == "feedback"
-    assert status["kwargs"] == {"warm": True}
+    assert status["kwargs"] == {"warm": True, "generation": None}
     assert step == {"action": "step", "args": ("s", 3, "rfl"), "kwargs": {"timeout_s": 5}}
     assert close == {"action": "close_state", "args": ("s",), "kwargs": {}}
 
@@ -139,11 +140,37 @@ def test_probe_reads_environment(monkeypatch):
     monkeypatch.setenv("LEAN_PROBE_LOCAL_REPL_PATH", "/tmp/repl")
     monkeypatch.setenv("LEAN_PROBE_LAKE_PATH", "/opt/lake")
     monkeypatch.setenv("LEAN_PROBE_VERBOSE", "1")
+    monkeypatch.setenv("LEAN_PROBE_MAX_FILE_SESSIONS", "3")
+    monkeypatch.setenv("LEAN_PROBE_MAX_SCRATCH_SESSIONS", "2")
+    monkeypatch.setenv("LEAN_PROBE_MAX_CODE_SESSIONS", "7")
     probe = _probe_from_env()
     assert probe.auto_build is True
     assert probe.local_repl_path == Path("/tmp/repl").resolve()
     assert probe.lake_path == Path("/opt/lake")
     assert probe.verbose is True
+    assert probe.max_file_sessions == 3
+    assert probe.max_scratch_sessions == 2
+    assert probe.max_code_sessions == 7
+
+
+@pytest.mark.parametrize("value", ["", "invalid", "0", "-2"])
+def test_probe_rejects_invalid_environment_pool_limit(monkeypatch, value):
+    monkeypatch.setenv("LEAN_PROBE_MAX_FILE_SESSIONS", value)
+    with pytest.raises(ValueError, match="LEAN_PROBE_MAX_FILE_SESSIONS must be a positive integer"):
+        _probe_from_env()
+
+
+def test_existing_tools_forward_explicit_generation():
+    server = create_server(probe=_FakeProbe())
+    tools = server._tool_manager._tools
+    requests = [
+        tools["lean_check"].fn(code="theorem t : True := by trivial", generation="built-v2"),
+        tools["lean_check_target"].fn(file="Demo.lean", name="demo", generation="built-v2"),
+        tools["lean_check_target"].fn(file="Demo.lean", name="demo", with_feedback=True, generation="built-v2"),
+        tools["lean_status"].fn(generation="built-v2"),
+        tools["lean_proof_state"].fn(code="theorem t : True := by sorry", generation="built-v2"),
+    ]
+    assert all(request["kwargs"]["generation"] == "built-v2" for request in requests)
 
 
 def test_probe_defaults_are_stdio_safe(monkeypatch):

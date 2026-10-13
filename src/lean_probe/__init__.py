@@ -7,7 +7,11 @@ from .probe import LeanProbe
 from .projects import find_lean_project_root
 from .segmentation import LeanIncrementalSegment, segment_file
 
-__all__ = ["LeanIncrementalSegment", "LeanProbe", "find_lean_project_root", "segment_file"]
+# Revision 1 guarantees native scoped parsing, linear transport, bounded pools,
+# caller-owned generations and verified project cleanup to orchestration clients.
+API_REVISION = 1
+
+__all__ = ["API_REVISION", "LeanIncrementalSegment", "LeanProbe", "find_lean_project_root", "segment_file"]
 
 
 def _source_tree_version() -> str:

@@ -110,6 +110,9 @@ def _build_backend(*, first_server_dies_on_env: bool = False) -> tuple[tuple[Any
         def kill(self):
             self.killed = True
 
+        def is_alive(self):
+            return not self.killed
+
     class _Config:
         def __init__(self, **kwargs):
             self.kwargs = kwargs

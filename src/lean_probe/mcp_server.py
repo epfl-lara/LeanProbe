@@ -18,7 +18,12 @@ from typing import Annotated, Any
 
 from . import __version__
 from .errors import ALL_ERROR_CODES
-from .probe import LeanProbe
+from .probe import (
+    DEFAULT_MAX_CODE_SESSIONS,
+    DEFAULT_MAX_FILE_SESSIONS,
+    DEFAULT_MAX_SCRATCH_SESSIONS,
+    LeanProbe,
+)
 
 _pydantic: Any
 try:
@@ -57,6 +62,15 @@ SERVER_INSTRUCTIONS = (
     "- Explore a goal tactic by tactic: `lean_proof_state` -> `lean_tactic` -> `lean_close_proof`.\n"
     "- Check readiness or warm the project up front: `lean_status` (pass warm=true to pay\n"
     "  cold-start now).\n"
+    "- Workers are bounded per session family; lean_status reports the configured limits.\n"
+    "- generation on check/target/status/state is an optional caller-owned dependency/build\n"
+    "  identity. Change it after preparing changed imports, toolchains, or build options to\n"
+    "  discard that project's warm workers. LeanProbe never checks dependency freshness or\n"
+    "  builds imports automatically by default. Omitting generation retains the active token.\n"
+    "- Scoped declaration parsing and response transport are native; no client parser patches\n"
+    "  are needed for inline or stacked command wrappers.\n"
+    "- session_cleanup_failed means worker exit could not be verified. Ownership and the\n"
+    "  previous generation remain retained; arrange termination and retry cleanup.\n"
     "\n"
     "PROJECT ROOT (cwd) is OPTIONAL: LeanProbe auto-detects the nearest Lake project\n"
     "(lakefile.lean/lakefile.toml) from the file, then from the server's working directory.\n"
@@ -143,10 +157,33 @@ Warm = Annotated[
     bool,
     ParamField(description="When true, boot the Lean REPL now so the first real check is fast."),
 ]
+Generation = Annotated[
+    str,
+    ParamField(
+        description="Optional caller-owned prepared dependency/build identity. A changed nonempty token discards "
+        "this project's warm workers, including proof states. Build changed imports first; LeanProbe "
+        "does not calculate this token or verify dependency freshness. Empty retains the current identity."
+    ),
+]
 
 
 def _env_bool(name: str) -> bool:
     return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_session_limit(name: str, default: int) -> int:
+    """Parse an optional positive worker limit and reject misleading configuration."""
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if value < 1:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
 
 
 def _resolve_lake_path() -> str:
@@ -170,6 +207,9 @@ def _probe_from_env() -> LeanProbe:
         local_repl_path=os.environ.get("LEAN_PROBE_LOCAL_REPL_PATH") or None,
         lake_path=_resolve_lake_path(),
         verbose=_env_bool("LEAN_PROBE_VERBOSE"),
+        max_code_sessions=_env_session_limit("LEAN_PROBE_MAX_CODE_SESSIONS", DEFAULT_MAX_CODE_SESSIONS),
+        max_file_sessions=_env_session_limit("LEAN_PROBE_MAX_FILE_SESSIONS", DEFAULT_MAX_FILE_SESSIONS),
+        max_scratch_sessions=_env_session_limit("LEAN_PROBE_MAX_SCRATCH_SESSIONS", DEFAULT_MAX_SCRATCH_SESSIONS),
     )
 
 
@@ -196,6 +236,7 @@ def create_server(probe: LeanProbe | None = None) -> Any:
         cwd: Cwd = "",
         include_tactics: IncludeTactics = False,
         timeout_s: TimeoutS = 90,
+        generation: Generation = "",
     ) -> dict[str, Any]:
         """Verify a standalone Lean 4 snippet and return diagnostics; the default checker.
 
@@ -204,7 +245,9 @@ def create_server(probe: LeanProbe | None = None) -> Any:
         checks of one project file, prefer lean_check_target (it reuses a warm environment).
         """
 
-        return active_probe.check_code(code, cwd=cwd or None, include_tactics=include_tactics, timeout_s=timeout_s)
+        return active_probe.check_code(
+            code, cwd=cwd or None, include_tactics=include_tactics, timeout_s=timeout_s, generation=generation or None
+        )
 
     @mcp.tool(annotations=read_only_idempotent)
     def lean_check_target(
@@ -215,6 +258,7 @@ def create_server(probe: LeanProbe | None = None) -> Any:
         with_feedback: WithFeedback = False,
         include_tactics: IncludeTactics = False,
         timeout_s: TimeoutS = 90,
+        generation: Generation = "",
     ) -> dict[str, Any]:
         """Check one named declaration in a project file against its warm prior environment.
 
@@ -226,7 +270,12 @@ def create_server(probe: LeanProbe | None = None) -> Any:
 
         if with_feedback:
             return active_probe.feedback(
-                file, theorem_id=name, cwd=cwd or None, replacement=replacement, timeout_s=timeout_s
+                file,
+                theorem_id=name,
+                cwd=cwd or None,
+                replacement=replacement,
+                timeout_s=timeout_s,
+                generation=generation or None,
             )
         return active_probe.check_target(
             file,
@@ -235,12 +284,14 @@ def create_server(probe: LeanProbe | None = None) -> Any:
             replacement=replacement,
             include_tactics=include_tactics,
             timeout_s=timeout_s,
+            generation=generation or None,
         )
 
     @mcp.tool(annotations=read_only_idempotent)
     def lean_status(
         cwd: Cwd = "",
         warm: Warm = False,
+        generation: Generation = "",
     ) -> dict[str, Any]:
         """Report readiness: project root, REPL path, live sessions, and any degraded reasons.
 
@@ -249,7 +300,7 @@ def create_server(probe: LeanProbe | None = None) -> Any:
         the first real check does not pay cold-start.
         """
 
-        return active_probe.capabilities(cwd or None, warm=warm)
+        return active_probe.capabilities(cwd or None, warm=warm, generation=generation or None)
 
     @mcp.tool(annotations=read_only)
     def lean_proof_state(
@@ -257,6 +308,7 @@ def create_server(probe: LeanProbe | None = None) -> Any:
         cwd: Cwd = "",
         include_tactics: IncludeTactics = False,
         timeout_s: TimeoutS = 90,
+        generation: Generation = "",
     ) -> dict[str, Any]:
         """Open interactive proof states from code containing `sorry`.
 
@@ -266,7 +318,7 @@ def create_server(probe: LeanProbe | None = None) -> Any:
         """
 
         return active_probe.proof_state_from_code(
-            code, cwd=cwd or None, include_tactics=include_tactics, timeout_s=timeout_s
+            code, cwd=cwd or None, include_tactics=include_tactics, timeout_s=timeout_s, generation=generation or None
         )
 
     @mcp.tool(annotations=read_only)

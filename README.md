@@ -10,6 +10,11 @@ seconds a fresh `lake build` or `lake env lean` costs. It never edits files —
 run `lake build` as the final whole-project gate. Built on
 [LeanInteract](https://github.com/augustepoiroux/LeanInteract).
 
+Scoped declaration parsing and the linear response reader belong to LeanProbe,
+so direct Python and MCP calls need no application-level backend patches.
+The 0.4.1 development build includes these optimizations and bounded worker pools.
+Python clients can require `API_REVISION >= 1` before depending on this contract.
+
 ## Quickstart
 
 Install (the MCP server is included):
@@ -122,7 +127,50 @@ from lean_probe import LeanProbe
 probe = LeanProbe()
 result = probe.check_target("File.lean", theorem_id="my_theorem", cwd="/path/to/lake-project")
 print(result["ok"], result["elapsed_s"])
+probe.close()
 ```
+
+## Warm worker lifecycle and freshness
+
+LeanProbe bounds workers separately for file target checks (4 by default),
+standalone snippet checks (2), and interactive proof states (16). Each family
+evicts its least recently used worker when its limit is reached. A file evicted
+from the pool rebuilds its imports and declaration prefix on its next check;
+an evicted proof session returns `unknown_session` and must be recreated.
+These limits bound process count, not total memory or the environments retained
+inside an individual REPL. Set `max_file_sessions`, `max_scratch_sessions`, and
+`max_code_sessions` on the Python constructor; MCP clients can set
+`LEAN_PROBE_MAX_FILE_SESSIONS`, `LEAN_PROBE_MAX_SCRATCH_SESSIONS`, and
+`LEAN_PROBE_MAX_CODE_SESSIONS` to positive integers. `lean_status` reports the
+limits and live pools.
+Eviction and project/generation cleanup verify worker exit before releasing
+ownership or starting replacements. If a worker remains alive or its exit
+cannot be verified, the operation returns `session_cleanup_failed` and retains
+ownership and the previous generation. Arrange termination and retry cleanup;
+partial cleanup counts include only workers verified stopped.
+Such workers are quarantined: old-token checks and tactic steps cannot reuse
+them or trigger replacement through dead-server recovery. `close()` remains a
+best-effort shutdown for ordinary workers; quarantined workers retain ownership
+until their exit is verified, including across `close()` calls.
+
+Edits to the target file are checked against its new header and declaration
+prefix. Changes to imported source files or compiled artifacts at the same
+paths are **not automatically detected**. The caller must first prepare current
+dependencies, then supply a new `generation` token to existing MCP check,
+target, status, or proof-state tools, or to the corresponding Python methods.
+The token is a caller-owned build/dependency identity: LeanProbe does not compute
+or validate it and does not trigger a project build by default. A changed
+explicit token discards all three worker families for that project, including
+interactive proof states, while preserving workers for other projects.
+Keep the token unchanged during proof-body iterations against the same prepared
+dependencies. Omitting it retains the active token, so existing unversioned
+callers retain their previous freshness responsibility.
+
+Python callers can alternatively run `probe.close_project(project_root)` after
+preparing changed dependencies to close only that project's workers. Use
+`probe.close()` for full shutdown. Warm results still cover the submitted code
+and its prepared environment; independently verify installed source and run
+`lake build` as the final project gate.
 
 ## Benchmarks
 

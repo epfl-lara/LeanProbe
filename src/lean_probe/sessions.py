@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ErrorCode, _error_code_for_exception
+from .transport import server_class_for_transport
+
+RETIREMENT_WAIT_S = 1.0
 
 
 def _import_lean_interact() -> tuple[Any, Any, Any, Any, Any, str]:
@@ -22,7 +25,7 @@ def _import_lean_interact() -> tuple[Any, Any, Any, Any, Any, str]:
         from lean_interact import Command, LeanREPLConfig, LeanServer, LocalProject, ProofStep
     except Exception as exc:
         return None, None, None, None, None, f"lean-interact unavailable: {exc}"
-    return Command, ProofStep, LeanREPLConfig, LeanServer, LocalProject, ""
+    return Command, ProofStep, LeanREPLConfig, server_class_for_transport(LeanServer), LocalProject, ""
 
 
 def import_error() -> str:
@@ -58,6 +61,9 @@ class _IncrementalSession:
     # and Lean elaboration is deterministic, so a matching pair is always a valid
     # cache hit regardless of how indices shift across edits.
     checkpoints: dict[int, _Checkpoint] = field(default_factory=dict)
+    retirement_process: Any = None
+    retirement_children: list[Any] | None = None
+    retirement_error: str = ""
 
     def close(self) -> None:
         try:
@@ -71,12 +77,129 @@ class _CodeSession:
     server: Any
     config: Any
     cwd: Path | None
+    retirement_process: Any = None
+    retirement_children: list[Any] | None = None
+    retirement_error: str = ""
 
     def close(self) -> None:
         try:
             self.server.kill()
         except Exception:
             pass
+
+
+def retire_session(session: _IncrementalSession | _CodeSession) -> str:
+    """Kill a worker and verify its captured process handles before releasing ownership.
+
+    LeanInteract may clear ``_proc`` even if killing fails. Keep the original Popen
+    and child handles on the session so a later attempt cannot mistake that worker
+    for an already retired server. Backends without process handles must provide a
+    usable ``is_alive`` method; a successful kill alone is not proof of exit.
+    """
+
+    try:
+        error = _retirement_error(session)
+    except Exception as exc:
+        error = f"session cleanup failed: backend exit cannot be verified: {exc}"
+    session.retirement_error = error
+    return error
+
+
+def _retirement_error(session: _IncrementalSession | _CodeSession) -> str:
+    """Return a retirement failure while preserving handles for later verified cleanup."""
+
+    if session.retirement_process is None:
+        session.retirement_process = getattr(session.server, "_proc", None)
+    process = session.retirement_process
+    if process is not None and session.retirement_children is None:
+        session.retirement_children = []
+        if getattr(process, "pid", None) is not None:
+            try:
+                import psutil
+            except ImportError as exc:
+                session.retirement_children = None
+                return f"session cleanup failed: cannot inspect owned child processes: {exc}"
+            try:
+                session.retirement_children = psutil.Process(process.pid).children(recursive=True)
+            except psutil.NoSuchProcess:
+                pass  # The root exited between capture and process-tree inspection.
+            except Exception as exc:
+                session.retirement_children = None
+                return f"session cleanup failed: cannot inspect owned child processes: {exc}"
+    kill_error = ""
+    try:
+        session.server.kill()
+    except Exception as exc:
+        kill_error = str(exc)
+    try:
+        if process is not None:
+            _wait_for_retirement(process, session.retirement_children or [])
+            if process.poll() is None:
+                return "session cleanup failed: owned REPL process is still alive" + (
+                    f" ({kill_error})" if kill_error else ""
+                )
+            for child in session.retirement_children or []:
+                try:
+                    if child.is_running() and child.status() != "zombie":
+                        return "session cleanup failed: owned child process is still alive"
+                except ProcessLookupError:
+                    continue
+                except Exception as exc:
+                    # psutil.NoSuchProcess is not a ProcessLookupError on all versions.
+                    import psutil
+
+                    if isinstance(exc, psutil.NoSuchProcess):
+                        continue
+                    raise
+        else:
+            is_alive = getattr(session.server, "is_alive", None)
+            if not callable(is_alive):
+                return "session cleanup failed: backend exit cannot be verified" + (
+                    f" ({kill_error})" if kill_error else ""
+                )
+            alive = is_alive()
+            if alive is not True and alive is not False:
+                return "session cleanup failed: backend exit cannot be verified"
+            if alive:
+                return "session cleanup failed: backend worker is still alive" + (
+                    f" ({kill_error})" if kill_error else ""
+                )
+    except Exception as exc:
+        return f"session cleanup failed: backend exit cannot be verified: {exc}"
+    return ""
+
+
+def _wait_for_retirement(process: Any, children: list[Any]) -> None:
+    """Allow signalled processes to exit within one shared, bounded grace period.
+
+    LeanInteract may issue SIGKILL to surviving children immediately before returning.
+    Waiting prevents transient liveness from becoming a sticky cleanup failure; only
+    the subsequent exit checks decide whether retirement succeeded.
+    """
+
+    deadline = time.perf_counter() + RETIREMENT_WAIT_S
+    if process.poll() is None:
+        wait = getattr(process, "wait", None)
+        if callable(wait):
+            try:
+                wait(timeout=max(0.0, deadline - time.perf_counter()))
+            except Exception:
+                pass  # Verify the actual exit state below, including timeout/death races.
+    if children:
+        try:
+            import psutil
+
+            live_children = []
+            for child in children:
+                try:
+                    if child.is_running() and child.status() != "zombie":
+                        live_children.append(child)
+                except (ProcessLookupError, psutil.NoSuchProcess):
+                    continue
+            if live_children:
+                psutil.wait_procs(live_children, timeout=max(0.0, deadline - time.perf_counter()))
+        except Exception:
+            pass  # Waiting is an optimization; final liveness verification remains mandatory.
 
 
 def build_server(
